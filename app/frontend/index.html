@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Personalized Federated Wireless Link Quality Intelligence</title>
+  <meta name="description" content="Research-grade dashboard and production inference engine for personalized federated learning on non-IID wireless signal data.">
+  
+  <!-- Modern Premium Fonts: Outfit, Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800;900&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Chart.js Library -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <!-- Core Stylesheet with Cache Buster -->
+  <link rel="stylesheet" href="/static/css/styles.css?v=3.2">
+</head>
+<body>
+
+  <!-- ========================================================================
+       SIDEBAR NAVIGATION
+       ======================================================================== -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <img src="/static/assets/logo.svg" alt="PFW Logo" class="sidebar-logo">
+      <div class="brand-text">
+        <h1>FedWireless</h1>
+        <span>Personalized DL</span>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-category">Main Application</div>
+      <a class="nav-item active" data-tab="tab-overview" id="nav-overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        <span class="nav-label">Dashboard</span>
+      </a>
+      <a class="nav-item" data-tab="tab-live-prediction" id="nav-live-prediction">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <span class="nav-label">Live Prediction</span>
+      </a>
+
+      <div class="nav-category">Federated System</div>
+      <a class="nav-item" data-tab="tab-federated" id="nav-federated">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><circle cx="5" cy="19" r="2"/><path d="M12 9V5M12 15v4M9 12H5M15 12h4"/></svg>
+        <span class="nav-label">Federated Learning</span>
+      </a>
+      <a class="nav-item" data-tab="tab-non-iid" id="nav-non-iid">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/></svg>
+        <span class="nav-label">Non-IID Analysis</span>
+      </a>
+      <a class="nav-item" data-tab="tab-dataset" id="nav-dataset">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        <span class="nav-label">Dataset Explorer</span>
+      </a>
+      <a class="nav-item" data-tab="tab-features" id="nav-features">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        <span class="nav-label">Feature Pipeline</span>
+      </a>
+
+      <div class="nav-category">Evaluation & Research</div>
+      <a class="nav-item" data-tab="tab-models" id="nav-models">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        <span class="nav-label">Model Analysis</span>
+      </a>
+      <a class="nav-item" data-tab="tab-evaluation" id="nav-evaluation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+        <span class="nav-label">Confusion Matrix</span>
+      </a>
+      <a class="nav-item" data-tab="tab-training" id="nav-training">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span class="nav-label">Training Analytics</span>
+      </a>
+      <a class="nav-item" data-tab="tab-hybrid" id="nav-hybrid">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        <span class="nav-label">Hybrid Strategy</span>
+      </a>
+      <a class="nav-item" data-tab="tab-gallery" id="nav-gallery">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+        <span class="nav-label">Research Figures</span>
+      </a>
+      <a class="nav-item" data-tab="tab-reports" id="nav-reports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+        <span class="nav-label">Reports & Exports</span>
+      </a>
+      <a class="nav-item" data-tab="tab-about" id="nav-about">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <span class="nav-label">About Project</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <span>Personalized FedPer v2.0</span>
+      <span class="status-pill" style="padding: 2px 8px; font-size: 0.68rem;">PyTorch/TF</span>
+    </div>
+  </aside>
+
+  <!-- ========================================================================
+       MAIN WRAPPER & HEADER
+       ======================================================================== -->
+  <div class="main-wrapper">
+    <header class="top-header">
+      <div class="header-left">
+        <button class="menu-toggle" id="menu-toggle-btn" aria-label="Toggle Navigation">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+        <div class="page-title-badge" id="header-title-badge">Dashboard</div>
+      </div>
+
+      <div class="header-right">
+        <div class="status-pill">
+          <div class="pulse-dot"></div>
+          <span>16 Client Models Online</span>
+        </div>
+
+        <button class="icon-btn" id="theme-toggle-btn" title="Toggle Light/Dark Theme">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
+
+        <a href="/docs" target="_blank" class="icon-btn" title="FastAPI Interactive Documentation">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        </a>
+      </div>
+    </header>
+
+    <!-- ======================================================================
+         CONTENT AREA (TABS)
+         ====================================================================== -->
+    <main class="content-area">
+
+      <!-- TAB 1: OVERVIEW / DASHBOARD -->
+      <section class="tab-content active" id="tab-overview">
+        <div class="section-header">
+          <h2>Personalized Federated Wireless Intelligence</h2>
+          <p>Privacy-preserving deep personalization for wireless link quality prediction under extreme non-IID device distributions.</p>
+        </div>
+
+        <!-- KPI Cards (Elevated Luxury Tech) -->
+        <div class="kpi-grid">
+          <div class="kpi-card kpi-card-emerald" data-jump-tab="tab-models" title="Click to view Model Analysis">
+            <div class="kpi-header-row">
+              <div class="kpi-icon-box">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24M14.83 9.17l4.24-4.24M14.83 14.83l4.24 4.24M9.17 14.83l-4.24 4.24"/></svg>
+              </div>
+              <span class="kpi-pill kpi-pill-emerald">Locked Hybrid</span>
+            </div>
+            <div class="kpi-value" id="kpi-acc">97.93%</div>
+            <div class="kpi-title">Test Accuracy</div>
+            <div class="kpi-subtext">Margin &plusmn;0.25 dBm &bull; Top Tier</div>
+          </div>
+
+          <div class="kpi-card kpi-card-cyan" data-jump-tab="tab-evaluation" title="Click to view Confusion Matrix">
+            <div class="kpi-header-row">
+              <div class="kpi-icon-box">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/></svg>
+              </div>
+              <span class="kpi-pill kpi-pill-cyan">Balanced</span>
+            </div>
+            <div class="kpi-value" id="kpi-balanced">98.42%</div>
+            <div class="kpi-title">Balanced Accuracy</div>
+            <div class="kpi-subtext">Equalized over 4 Link Classes</div>
+          </div>
+
+          <div class="kpi-card kpi-card-indigo" data-jump-tab="tab-hybrid" title="Click to view Hybrid Strategy">
+            <div class="kpi-header-row">
+              <div class="kpi-icon-box">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              </div>
+              <span class="kpi-pill kpi-pill-indigo">Harmonic</span>
+            </div>
+            <div class="kpi-value" id="kpi-f1">97.94%</div>
+            <div class="kpi-title">Weighted F1-Score</div>
+            <div class="kpi-subtext">Rigorous Held-Out Evaluation</div>
+          </div>
+
+          <div class="kpi-card kpi-card-purple" data-jump-tab="tab-federated" title="Click to view Federated Clients">
+            <div class="kpi-header-row">
+              <div class="kpi-icon-box">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></svg>
+              </div>
+              <span class="kpi-pill kpi-pill-purple">FedPer</span>
+            </div>
+            <div class="kpi-value" id="kpi-clients">16</div>
+            <div class="kpi-title">Federated Clients</div>
+            <div class="kpi-subtext">Personalized PHONEID Heads</div>
+          </div>
+
+          <div class="kpi-card kpi-card-amber" data-jump-tab="tab-features" title="Click to view Feature Pipeline">
+            <div class="kpi-header-row">
+              <div class="kpi-icon-box">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+              </div>
+              <span class="kpi-pill kpi-pill-amber">Engineered</span>
+            </div>
+            <div class="kpi-value" id="kpi-features">472</div>
+            <div class="kpi-title">Pipeline Features</div>
+            <div class="kpi-subtext">465 WAPs + 7 Statistical</div>
+          </div>
+
+          <div class="kpi-card kpi-card-rose" data-jump-tab="tab-dataset" title="Click to view Dataset Explorer">
+            <div class="kpi-header-row">
+              <div class="kpi-icon-box">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+              </div>
+              <span class="kpi-pill kpi-pill-rose">UJIIndoor</span>
+            </div>
+            <div class="kpi-value" id="kpi-samples">19,937</div>
+            <div class="kpi-title">Dataset Samples</div>
+            <div class="kpi-subtext">Real-World Wireless Signatures</div>
+          </div>
+        </div>
+
+        <!-- Dashboard Charts Grid -->
+        <div class="dashboard-grid">
+          <div class="card col-8">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Comparative Architecture Benchmarks</h3>
+                <span class="card-subtitle">Centralized Baseline vs FedAvg vs FedPer vs Locked Hybrid</span>
+              </div>
+            </div>
+            <div class="card-body" style="height: 320px;">
+              <canvas id="chart-model-comparison"></canvas>
+            </div>
+          </div>
+
+          <div class="card col-4">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Decision Routing</h3>
+                <span class="card-subtitle">Physical RSSI Rule vs Personalized Head</span>
+              </div>
+            </div>
+            <div class="card-body" style="height: 250px;">
+              <canvas id="chart-decision-donut"></canvas>
+            </div>
+            <div style="padding: 0 20px 16px 20px; display: flex; justify-content: space-around; font-size: 0.82rem;">
+              <div>Rule: <strong id="strat-rule-pct">93.5%</strong></div>
+              <div>Neural: <strong id="strat-neural-pct">6.5%</strong></div>
+            </div>
+          </div>
+
+          <div class="card col-12">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Federated Personalization (FedPer) Convergence Curve</h3>
+                <span class="card-subtitle">35 Communication Rounds: Training Accuracy, Mean Client Val & Pooled Val</span>
+              </div>
+            </div>
+            <div class="card-body" style="height: 300px;">
+              <canvas id="chart-convergence-history"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: LIVE PREDICTION -->
+      <section class="tab-content" id="tab-live-prediction">
+        <div class="section-header">
+          <h2>Live Wireless Link Quality Predictor</h2>
+          <p>Test real-time hybrid classification with custom or pre-filled Wi-Fi RSSI measurements.</p>
+        </div>
+
+        <!-- Interactive Quality Meter -->
+        <div class="quality-meter-container">
+          <div class="meter-header">
+            <div>
+              <strong style="font-size: 0.95rem;">Dynamic RSSI Quality Scale</strong>
+              <span style="font-size: 0.8rem; color: var(--text-muted); margin-left: 8px;">Physical Boundaries: -75 dBm | -65 dBm | -55 dBm (&plusmn;0.25 dBm Hybrid Margin)</span>
+            </div>
+          </div>
+          <div class="meter-track">
+            <div class="meter-needle" id="meter-needle">
+              <div class="meter-needle-label" id="meter-needle-label">-70.0 dBm</div>
+            </div>
+          </div>
+          <div class="meter-labels">
+            <span class="zone-poor">Poor (&lt; -75 dBm)</span>
+            <span class="zone-fair">Fair (-75 to -65 dBm)</span>
+            <span class="zone-good">Good (-65 to -55 dBm)</span>
+            <span class="zone-excellent">Excellent (&ge; -55 dBm)</span>
+          </div>
+        </div>
+
+        <div class="predictor-layout">
+          <!-- Input Form -->
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Device & Signal Input</h3>
+                <span class="card-subtitle">Configure PHONEID device parameters & RSSI inputs</span>
+              </div>
+            </div>
+            <div class="card-body">
+              <!-- Quick Preset Scenarios -->
+              <div class="preset-chips-section">
+                <span class="preset-chips-label">Instant Scenario Presets</span>
+                <div class="preset-chips-row">
+                  <button type="button" class="preset-chip chip-boundary" data-preset="boundary_sample" title="Test borderline RSSI near -65 dBm">
+                    <span>⚡</span> Boundary Margin (-64.8 dBm)
+                  </button>
+                  <button type="button" class="preset-chip chip-excellent" data-preset="excellent_sample" title="Test high-throughput excellent signal">
+                    <span>🚀</span> Strong / Excellent (-48.0 dBm)
+                  </button>
+                  <button type="button" class="preset-chip chip-fair" data-preset="fair_sample" title="Test moderate received signal strength">
+                    <span>📶</span> Moderate / Fair (-71.5 dBm)
+                  </button>
+                  <button type="button" class="preset-chip chip-poor" data-preset="poor_sample" title="Test weak cell edge signal">
+                    <span>⚠️</span> Weak / Poor (-82.0 dBm)
+                  </button>
+                </div>
+              </div>
+
+              <!-- Real-time Signal Simulation Slider -->
+              <div class="slider-control-box">
+                <div class="slider-header-row">
+                  <span class="slider-label">🎛️ Primary Signal Strength (WAP001):</span>
+                  <span class="slider-value-display" id="slider-rssi-val">-64.8 dBm</span>
+                </div>
+                <input type="range" class="interactive-slider" id="interactive-rssi-slider" min="-100" max="-30" step="0.5" value="-64.8">
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="input-phone-id">Target Client Device (PHONEID):</label>
+                <select class="form-select" id="input-phone-id">
+                  <option value="1">PHONEID 1 (Personalized Client)</option>
+                  <option value="3">PHONEID 3 (Personalized Client)</option>
+                  <option value="6">PHONEID 6 (Personalized Client)</option>
+                  <option value="7">PHONEID 7 (Personalized Client)</option>
+                  <option value="8">PHONEID 8 (Personalized Client)</option>
+                  <option value="10">PHONEID 10 (Personalized Client)</option>
+                  <option value="11">PHONEID 11 (Personalized Client)</option>
+                  <option value="13">PHONEID 13 (Personalized Client)</option>
+                  <option value="14" selected>PHONEID 14 (Personalized Client)</option>
+                  <option value="16">PHONEID 16 (Personalized Client)</option>
+                  <option value="17">PHONEID 17 (Personalized Client)</option>
+                  <option value="18">PHONEID 18 (Personalized Client)</option>
+                  <option value="19">PHONEID 19 (Personalized Client)</option>
+                  <option value="22">PHONEID 22 (Personalized Client)</option>
+                  <option value="23">PHONEID 23 (Personalized Client)</option>
+                  <option value="24">PHONEID 24 (Personalized Client)</option>
+                  <option value="unknown">Unknown / Other Device (Fallback)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="input-rssi-measurements">
+                  WAP RSSI Measurements (one per line or key=value):
+                </label>
+                <textarea class="form-textarea" id="input-rssi-measurements" rows="7" placeholder="WAP001=-55&#10;WAP002=-63&#10;WAP005=-71&#10;WAP010=-68">WAP001=-64.8
+WAP002=-70.0
+WAP005=-75.0
+WAP010=-82.0</textarea>
+                <div style="font-size: 0.76rem; color: var(--text-dim); margin-top: 5px;">
+                  Unspecified WAPs default to -100 dBm (no signal). UJIIndoorLoc 100 converts to -100 dBm.
+                </div>
+              </div>
+
+              <div class="btn-row">
+                <button class="btn btn-primary" id="btn-predict">
+                  <span>⚡</span> Predict Link Quality
+                </button>
+                <button class="btn btn-secondary" id="btn-load-sample">
+                  Boundary Sample
+                </button>
+                <button class="btn btn-secondary" id="btn-clear-input">
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Prediction Result Card -->
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Prediction Diagnostics</h3>
+                <span class="card-subtitle">Hybrid strategy decision routing & confidence evaluation</span>
+              </div>
+            </div>
+            <div class="card-body">
+              <div id="prediction-empty-state" style="text-align: center; padding: 48px 20px; color: var(--text-dim);">
+                <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" style="margin-bottom: 12px; opacity: 0.45; stroke: var(--accent-cyan);"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                <h4 style="font-size: 1.05rem; font-weight: 700; color: var(--text-main); margin-bottom: 4px;">Awaiting Signal Input</h4>
+                <p style="font-size: 0.88rem;">Select a preset scenario above or click <strong>Predict Link Quality</strong> to run inference.</p>
+              </div>
+
+              <div id="prediction-result-panel" style="display: none;">
+                <div class="result-badge-row">
+                  <div>
+                    <span class="quality-badge badge-Good" id="res-class-badge">Good</span>
+                  </div>
+                  <div style="text-align: right;">
+                    <span style="font-size: 0.78rem; color: var(--text-dim); text-transform: uppercase; font-weight: 700;">Status</span>
+                    <div style="font-size: 0.95rem; font-weight: 700; color: var(--accent-emerald);" id="res-status-label">Inference Valid</div>
+                  </div>
+                </div>
+
+                <!-- Confidence Bar -->
+                <div class="confidence-box">
+                  <div class="confidence-header">
+                    <span class="confidence-label">Prediction Confidence</span>
+                    <span class="confidence-percent" id="res-confidence">98.5%</span>
+                  </div>
+                  <div class="confidence-bar-container">
+                    <div class="confidence-bar-fill" id="res-confidence-bar" style="width: 98.5%;"></div>
+                  </div>
+                </div>
+
+                <p id="res-description" style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 16px;"></p>
+
+                <!-- Decision Routing Flowchart -->
+                <div class="decision-flow-box">
+                  <div class="flow-title">Hybrid Decision Pipeline Execution Flow</div>
+                  <div class="flow-steps-grid">
+                    <div class="flow-step-card active" id="flow-card-1">
+                      <span class="flow-step-num">Step 1</span>
+                      <div class="flow-step-name">Max RSSI</div>
+                      <div class="flow-step-meta" id="flow-val-rssi">-64.8 dBm</div>
+                    </div>
+                    <div class="flow-arrow-icon">→</div>
+                    <div class="flow-step-card active" id="flow-card-2">
+                      <span class="flow-step-num">Step 2</span>
+                      <div class="flow-step-name">±0.25 dBm Gate</div>
+                      <div class="flow-step-meta" id="flow-val-margin">In Margin</div>
+                    </div>
+                    <div class="flow-arrow-icon">→</div>
+                    <div class="flow-step-card active-neural" id="flow-card-3">
+                      <span class="flow-step-num">Step 3</span>
+                      <div class="flow-step-name">Execution Route</div>
+                      <div class="flow-step-meta" id="flow-val-route">Personalized DL</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="reason-callout" id="res-decision-reason"></div>
+
+                <table class="stats-table">
+                  <tr>
+                    <td style="color: var(--text-dim);">Selected Model</td>
+                    <td id="res-model-used">-</td>
+                  </tr>
+                  <tr>
+                    <td style="color: var(--text-dim);">Neural Head Invoked</td>
+                    <td><span id="res-neural-pill" class="status-pill">No</span></td>
+                  </tr>
+                  <tr>
+                    <td style="color: var(--text-dim);">Maximum Observed RSSI</td>
+                    <td id="res-max-rssi">-</td>
+                  </tr>
+                  <tr>
+                    <td style="color: var(--text-dim);">Mean Signal Strength</td>
+                    <td id="res-mean-rssi">-</td>
+                  </tr>
+                  <tr>
+                    <td style="color: var(--text-dim);">Detected APs Count</td>
+                    <td id="res-detected-aps">-</td>
+                  </tr>
+                  <tr>
+                    <td style="color: var(--text-dim);">Distance to Nearest Boundary</td>
+                    <td id="res-threshold-dist">-</td>
+                  </tr>
+                </table>
+
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px;">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-toggle-json">
+                    <span>{ }</span> Toggle Raw JSON
+                  </button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-copy-json">
+                    <span>📋</span> Copy JSON
+                  </button>
+                </div>
+                <div id="json-code-wrapper" style="display: none; margin-top: 10px;">
+                  <pre id="res-json-code" style="padding: 14px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 0.75rem; overflow-x: auto; font-family: var(--font-mono);"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: FEDERATED LEARNING ARCHITECTURE -->
+      <section class="tab-content" id="tab-federated">
+        <div class="section-header">
+          <h2>Federated Learning Architecture (FedPer)</h2>
+          <p>Hierarchical model personalization: Central server orchestrates shared feature representations while client devices retain private classification heads.</p>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="card col-12">
+            <div class="card-header">
+              <h3 class="card-title">Per-Client Held-Out Test Accuracy (16 PHONEIDs)</h3>
+            </div>
+            <div class="card-body" style="height: 280px;">
+              <canvas id="chart-client-accuracies"></canvas>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <div class="clients-toolbar">
+              <div>
+                <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 4px;">Federated Client Devices Directory</h3>
+                <span style="font-size: 0.8rem; color: var(--text-dim);" id="clients-counter-label">16 Personalized Device Models Loaded</span>
+              </div>
+              <div class="search-input-box">
+                <input type="text" id="client-search-input" class="form-input" placeholder="🔍 Search PHONEID (e.g. 14, 23)...">
+              </div>
+            </div>
+            <div class="client-grid" id="clients-grid-container">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: NON-IID ANALYSIS -->
+      <section class="tab-content" id="tab-non-iid">
+        <div class="section-header">
+          <h2>Non-IID Heterogeneity Analysis</h2>
+          <p>Empirical evidence of non-identically distributed cell data across client phone hardware.</p>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Client &times; Class Heterogeneity Matrix (Real Proportions)</h3>
+          </div>
+          <div class="card-body table-responsive">
+            <table class="modern-table">
+              <thead>
+                <tr>
+                  <th>Client</th>
+                  <th style="color: var(--quality-poor);">Poor (&lt; -75 dBm)</th>
+                  <th style="color: var(--quality-fair);">Fair (-75 to -65 dBm)</th>
+                  <th style="color: var(--quality-good);">Good (-65 to -55 dBm)</th>
+                  <th style="color: var(--quality-excellent);">Excellent (&ge; -55 dBm)</th>
+                </tr>
+              </thead>
+              <tbody id="non-iid-heatmap-tbody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: DATASET EXPLORER -->
+      <section class="tab-content" id="tab-dataset">
+        <div class="section-header">
+          <h2>UJIIndoorLoc Dataset Explorer</h2>
+          <p>Inspect raw Wi-Fi RSSI fingerprint records with backend-paginated streaming.</p>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Fingerprint Samples (trainingData.csv)</h3>
+            <span id="dataset-page-indicator" style="font-size: 0.8rem; color: var(--text-muted);">Page 1</span>
+          </div>
+          <div class="card-body table-responsive">
+            <table class="modern-table">
+              <thead>
+                <tr>
+                  <th>Device ID</th>
+                  <th>Building</th>
+                  <th>Floor</th>
+                  <th>Detected WAPs</th>
+                  <th>Max RSSI</th>
+                  <th>Top Detected Signals</th>
+                </tr>
+              </thead>
+              <tbody id="dataset-explorer-tbody">
+                <tr><td colspan="6" style="text-align: center; padding: 20px;">Loading dataset records...</td></tr>
+              </tbody>
+            </table>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 18px;">
+              <button class="btn btn-secondary" id="btn-dataset-prev">Previous</button>
+              <button class="btn btn-secondary" id="btn-dataset-next">Next</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: FEATURE PIPELINE -->
+      <section class="tab-content" id="tab-features">
+        <div class="section-header">
+          <h2>472-Dimensional Feature Pipeline</h2>
+          <p>Mathematical derivation and preprocessing architecture for wireless link quality modeling.</p>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="card col-6">
+            <div class="card-header">
+              <h3 class="card-title">Feature Space Partition</h3>
+            </div>
+            <div class="card-body">
+              <table class="stats-table">
+                <tr><td>Original WAP Features</td><td><strong>520</strong></td></tr>
+                <tr><td>Zero-Variance Constant WAPs Removed</td><td><strong>55</strong></td></tr>
+                <tr><td>Usable Spatial WAP Features</td><td><strong>465</strong></td></tr>
+                <tr><td>Engineered Signal Statistics</td><td><strong>7</strong></td></tr>
+                <tr><td>Total Deep Learning Inputs</td><td><strong style="color: var(--accent-emerald);">472</strong></td></tr>
+              </table>
+            </div>
+          </div>
+
+          <div class="card col-6">
+            <div class="card-header">
+              <h3 class="card-title">Engineered Signal Statistics</h3>
+            </div>
+            <div class="card-body">
+              <table class="stats-table">
+                <tr><td><code>max_rssi</code></td><td>Peak signal strength across usable WAPs</td></tr>
+                <tr><td><code>mean_rssi</code></td><td>Average signal intensity of all WAPs</td></tr>
+                <tr><td><code>median_rssi</code></td><td>50th percentile robust signal central tendency</td></tr>
+                <tr><td><code>std_rssi</code></td><td>Signal variance across spatial transmitters</td></tr>
+                <tr><td><code>detected_aps</code></td><td>Count of active APs above -100 dBm threshold</td></tr>
+                <tr><td><code>top3_mean</code></td><td>Mean of the 3 strongest detected APs</td></tr>
+                <tr><td><code>top5_mean</code></td><td>Mean of the 5 strongest detected APs</td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 7: MODEL ANALYSIS -->
+      <section class="tab-content" id="tab-models">
+        <div class="section-header">
+          <h2>Model Benchmark Comparison</h2>
+          <p>Comparative empirical results across Centralized, FedAvg, FedPer, and Hybrid architectures.</p>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Quantitative Evaluation Comparison</h3>
+          </div>
+          <div class="card-body table-responsive">
+            <table class="modern-table">
+              <thead>
+                <tr>
+                  <th>Architecture</th>
+                  <th>Test Accuracy</th>
+                  <th>Balanced Accuracy</th>
+                  <th>Weighted F1-Score</th>
+                </tr>
+              </thead>
+              <tbody id="model-comparison-tbody">
+                <!-- Populated dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 8: CONFUSION MATRIX -->
+      <section class="tab-content" id="tab-evaluation">
+        <div class="section-header">
+          <h2>Confusion Matrix & Per-Class Metrics</h2>
+          <p>Detailed evaluation on the 2,998 test samples.</p>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="card col-6">
+            <div class="card-header">
+              <h3 class="card-title">Confusion Matrix Heatmap (N = 2,998)</h3>
+            </div>
+            <div class="card-body table-responsive">
+              <table class="modern-table" style="text-align: center;">
+                <thead>
+                  <tr>
+                    <th>True \ Pred</th>
+                    <th style="color: var(--quality-poor);">Poor</th>
+                    <th style="color: var(--quality-fair);">Fair</th>
+                    <th style="color: var(--quality-good);">Good</th>
+                    <th style="color: var(--quality-excellent);">Excellent</th>
+                  </tr>
+                </thead>
+                <tbody id="confusion-matrix-tbody">
+                  <!-- Populated dynamically -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card col-6">
+            <div class="card-header">
+              <h3 class="card-title">Per-Class Performance</h3>
+            </div>
+            <div class="card-body" style="height: 280px;">
+              <canvas id="chart-per-class"></canvas>
+            </div>
+          </div>
+
+          <div class="col-12" id="per-class-cards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 9: TRAINING ANALYTICS -->
+      <section class="tab-content" id="tab-training">
+        <div class="section-header">
+          <h2>Federation Training Analytics</h2>
+          <p>Convergence logs across communication rounds.</p>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Multi-Model Convergence History</h3>
+          </div>
+          <div class="card-body">
+            <img src="/graphs/generated/12_validation_accuracy_history.png" alt="Validation Accuracy History" style="max-width: 100%; border-radius: 8px;">
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 10: HYBRID STRATEGY -->
+      <section class="tab-content" id="tab-hybrid">
+        <div class="section-header">
+          <h2>Locked Hybrid Decision Strategy</h2>
+          <p>Margin-hybrid policy with 0.25 dBm threshold ambiguity zone.</p>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="card col-6">
+            <div class="card-header">
+              <h3 class="card-title">Boundary Margin Specification</h3>
+            </div>
+            <div class="card-body">
+              <table class="stats-table">
+                <tr><td>Strategy Formulation</td><td><code>margin_hybrid</code></td></tr>
+                <tr><td>Decision Margin</td><td><strong>0.25 dBm</strong></td></tr>
+                <tr><td>Primary Rule Accuracy</td><td><strong>96.63%</strong></td></tr>
+                <tr><td>Neural Head Accuracy</td><td><strong>92.19%</strong></td></tr>
+                <tr><td>Final Hybrid Accuracy</td><td><strong style="color: var(--accent-emerald);">97.93%</strong></td></tr>
+                <tr><td>Balanced Accuracy Gain</td><td><strong style="color: var(--accent-emerald);">+9.05% over FedPer</strong></td></tr>
+              </table>
+            </div>
+          </div>
+
+          <div class="card col-6">
+            <div class="card-header">
+              <h3 class="card-title">Boundary Visualization</h3>
+            </div>
+            <div class="card-body">
+              <img src="/graphs/generated/17_rssi_threshold_visualization.png" alt="Threshold Visualization" style="max-width: 100%; border-radius: 8px;">
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 11: RESEARCH FIGURES GALLERY -->
+      <section class="tab-content" id="tab-gallery">
+        <div class="section-header">
+          <h2>Publication Research Figures Gallery</h2>
+          <p>18 high-resolution 300-DPI research figures generated directly from dataset and round histories.</p>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px;">
+          <div class="card">
+            <div class="card-header"><span class="card-title">01. Class Distribution</span></div>
+            <div class="card-body"><img src="/graphs/generated/01_dataset_class_distribution.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">02. RSSI Distribution</span></div>
+            <div class="card-body"><img src="/graphs/generated/02_rssi_distribution.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">03. Max RSSI Distribution</span></div>
+            <div class="card-body"><img src="/graphs/generated/03_max_rssi_distribution.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">04. Detected APs Distribution</span></div>
+            <div class="card-body"><img src="/graphs/generated/04_detected_aps_distribution.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">05. Client Sample Allocation</span></div>
+            <div class="card-body"><img src="/graphs/generated/05_client_sample_distribution.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">06. Non-IID Class Stacked</span></div>
+            <div class="card-body"><img src="/graphs/generated/06_client_class_distribution.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">07. Non-IID Heterogeneity Heatmap</span></div>
+            <div class="card-body"><img src="/graphs/generated/07_client_class_heatmap.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">08. Client Test Accuracies</span></div>
+            <div class="card-body"><img src="/graphs/generated/08_client_test_accuracy.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">09. Model Accuracy Comparison</span></div>
+            <div class="card-body"><img src="/graphs/generated/09_model_accuracy_comparison.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">10. Model F1 Comparison</span></div>
+            <div class="card-body"><img src="/graphs/generated/10_model_f1_comparison.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">11. FedPer Convergence</span></div>
+            <div class="card-body"><img src="/graphs/generated/11_fedper_convergence.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">12. Validation History</span></div>
+            <div class="card-body"><img src="/graphs/generated/12_validation_accuracy_history.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">13. Final Confusion Matrix</span></div>
+            <div class="card-body"><img src="/graphs/generated/13_final_confusion_matrix.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">14. Per-Class Precision & Recall</span></div>
+            <div class="card-body"><img src="/graphs/generated/14_final_per_class_metrics.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">15. Hybrid Routing Donut</span></div>
+            <div class="card-body"><img src="/graphs/generated/15_hybrid_decision_usage.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">16. Feature Preprocessing Pipeline</span></div>
+            <div class="card-body"><img src="/graphs/generated/16_feature_pipeline.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">17. RSSI Boundary Intervals</span></div>
+            <div class="card-body"><img src="/graphs/generated/17_rssi_threshold_visualization.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">18. Step 16 Neural Architecture</span></div>
+            <div class="card-body"><img src="/graphs/generated/18_model_architecture.png" style="width: 100%; border-radius: 6px;"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 12: REPORTS & EXPORTS -->
+      <section class="tab-content" id="tab-reports">
+        <div class="section-header">
+          <h2>Research Reports & Data Exports</h2>
+          <p>Export empirical test sets, per-client metrics, and summary JSON for external review.</p>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="card col-6">
+            <div class="card-header">
+              <h3 class="card-title">Export Evaluation Data</h3>
+            </div>
+            <div class="card-body">
+              <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 16px;">
+                Download held-out test predictions (2,998 rows) with individual rule vs neural decisions.
+              </p>
+              <div style="display: flex; flex-direction: column; gap: 10px;">
+                <a href="/api/reports/download/final_predictions" class="btn btn-secondary">
+                  <span>📥</span> Download Test Predictions (CSV)
+                </a>
+                <a href="/api/reports/download/client_metrics" class="btn btn-secondary">
+                  <span>📥</span> Download Per-Client Benchmarks (CSV)
+                </a>
+                <a href="/api/reports/download/model_comparison" class="btn btn-secondary">
+                  <span>📥</span> Download Model Comparison (CSV)
+                </a>
+                <a href="/api/reports/download/summary_json" class="btn btn-primary">
+                  <span>📄</span> Download Comprehensive Project JSON
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 13: ABOUT PROJECT -->
+      <section class="tab-content" id="tab-about">
+        <div class="section-header">
+          <h2>About The Research Project</h2>
+          <p>System specifications, methodology, and dataset attribution.</p>
+        </div>
+
+        <div class="card">
+          <div class="card-body" style="line-height: 1.8; font-size: 0.92rem;">
+            <h3 style="font-size: 1.15rem; font-weight: 700; color: var(--text-main); margin-bottom: 10px;">Project Title</h3>
+            <p style="margin-bottom: 16px;">
+              <strong>Personalized Federated Deep Learning for Wireless Link Quality Prediction under Non-IID Cell Data</strong>
+            </p>
+
+            <div style="padding: 16px; border-radius: var(--radius-md); background: rgba(6, 182, 212, 0.1); border: 1px solid rgba(6, 182, 212, 0.25); margin-bottom: 20px;">
+              <strong style="color: var(--accent-cyan);">Dataset Clarification Note:</strong>
+              <p style="color: var(--text-main); margin-top: 4px;">
+                The system evaluates RSSI-derived wireless link quality using Wi-Fi fingerprint measurements from the UJIIndoorLoc benchmark dataset. It is not a direct 4G/5G cellular dataset. All signal quality regimes (Poor, Fair, Good, Excellent) are mapped via physical received signal strength boundaries.
+              </p>
+            </div>
+
+            <h4 style="font-weight: 700; margin-top: 14px;">Key Innovations</h4>
+            <ul style="margin-left: 20px; color: var(--text-muted);">
+              <li><strong>Personalized Split Architecture (FedPer):</strong> Overcomes client heterogeneity by keeping deep feature extraction shared across federation while training personalized private classification heads locally.</li>
+              <li><strong>Continuous Soft Threshold Integration:</strong> Mathematical sigmoid branches embedded directly in the neural graph to provide continuous awareness of physical signal transition zones.</li>
+              <li><strong>Locked Margin-Hybrid Strategy:</strong> Uses deterministic RSSI physical boundaries for 93.5% of points and routes only boundary-ambiguous samples within 0.25 dBm to personalized neural inference, achieving 97.93% test accuracy and 98.42% balanced accuracy.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Scripts with Cache Busters -->
+  <script src="/static/js/charts.js?v=3.2"></script>
+  <script src="/static/js/predictor.js?v=3.2"></script>
+  <script src="/static/js/app.js?v=3.2"></script>
+</body>
+</html>

@@ -1,0 +1,5070 @@
+EXTRACTED GRADIO UI CELLS FROM Untitled5.ipynb
+==========================================================================================
+
+CELL 16
+MATCHES: threshold_aware_fedper_best
+------------------------------------------------------------------------------------------
+# ============================================================================
+# STEP 16: HIGH-ACCURACY THRESHOLD-AWARE PERSONALIZED FEDPER
+# ============================================================================
+#
+# Goal:
+#   Push learned FedPer accuracy closer to the 96.79% rule-based validation
+#   ceiling while preserving train/validation/test separation.
+#
+# IMPORTANT:
+#   - TEST DATA IS NOT LOADED.
+#   - NO CLASS WEIGHTS.
+#   - VALIDATION IS USED ONLY FOR MODEL/ROUND SELECTION.
+#
+# The target was created using max_rssi thresholds, so this model gives the
+# neural network an explicit differentiable representation of those threshold
+# regions rather than asking a deep network to rediscover them from scratch.
+# ============================================================================
+
+import os
+import gc
+import pickle
+import random
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+from tensorflow.keras import layers, Model
+from tensorflow.keras.optimizers import Adam
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score
+)
+
+print("=" * 80)
+print("STEP 16: HIGH-ACCURACY THRESHOLD-AWARE PERSONALIZED FEDPER")
+print("=" * 80)
+
+# ============================================================================
+# 1. Reproducibility
+# ============================================================================
+
+SEED = 42
+
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
+# ============================================================================
+# 2. Load only TRAIN + VALIDATION
+# ============================================================================
+
+DATA_PATH = "/content/federated_data_3way_final.pkl"
+SCALER_PATH = "/content/centralized_wireless_scaler.pkl"
+
+with open(DATA_PATH, "rb") as f:
+    d = pickle.load(f)
+
+with open(SCALER_PATH, "rb") as f:
+    scaler = pickle.load(f)
+
+X_train = np.asarray(
+    d["X_train"],
+    dtype=np.float32
+)
+
+y_train = np.asarray(
+    d["y_train"],
+    dtype=np.int64
+)
+
+X_val = np.asarray(
+    d["X_val"],
+    dtype=np.float32
+)
+
+y_val = np.asarray(
+    d["y_val"],
+    dtype=np.int64
+)
+
+clients_train = np.asarray(
+    d["clients_train"],
+    dtype=np.int64
+)
+
+clients_val = np.asarray(
+    d["clients_val"],
+    dtype=np.int64
+)
+
+selected_features = list(
+    d["selected_features"]
+)
+
+signal_feature_names = list(
+    d["signal_feature_names"]
+)
+
+print("\nData")
+print("-" * 50)
+print("Training   :", X_train.shape)
+print("Validation :", X_val.shape)
+print("Test       : NOT LOADED")
+
+# ============================================================================
+# 3. Locate max_rssi
+# ============================================================================
+
+if "max_rssi" not in signal_feature_names:
+    raise ValueError(
+        "max_rssi is missing from signal_feature_names."
+    )
+
+MAX_RSSI_INDEX = (
+    len(selected_features)
+    +
+    signal_feature_names.index("max_rssi")
+)
+
+print(
+    "max_rssi index:",
+    MAX_RSSI_INDEX
+)
+
+if MAX_RSSI_INDEX != 465:
+    raise ValueError(
+        f"Expected max_rssi at index 465, "
+        f"found {MAX_RSSI_INDEX}."
+    )
+
+# ============================================================================
+# 4. Convert original RSSI thresholds into SCALED input thresholds
+# ============================================================================
+
+# MinMaxScaler transforms:
+#
+#   scaled = raw * scale_ + min_
+#
+# Therefore:
+#
+#   scaled_threshold = raw_threshold * scale_ + min_
+#
+# The original target definition is:
+#
+#   Poor      < -75
+#   Fair      [-75, -65)
+#   Good      [-65, -55)
+#   Excellent >= -55
+# ============================================================================
+
+threshold_raw = np.array(
+    [-75.0, -65.0, -55.0],
+    dtype=np.float32
+)
+
+threshold_scaled = (
+    threshold_raw
+    * scaler.scale_[MAX_RSSI_INDEX]
+    + scaler.min_[MAX_RSSI_INDEX]
+)
+
+print("\nmax_rssi thresholds")
+print("-" * 50)
+
+for raw, scaled in zip(
+    threshold_raw,
+    threshold_scaled
+):
+    print(
+        f"{raw:7.1f} dBm -> scaled {scaled:.6f}"
+    )
+
+# ============================================================================
+# 5. Client information
+# ============================================================================
+
+unique_clients = np.sort(
+    np.unique(clients_train)
+)
+
+print(
+    "\nFederated clients:",
+    len(unique_clients)
+)
+
+# ============================================================================
+# 6. Build threshold-aware FedPer model
+# ============================================================================
+
+def build_threshold_aware_fedper():
+
+    inputs = layers.Input(
+        shape=(472,),
+        name="input"
+    )
+
+    # ------------------------------------------------------------------------
+    # Main shared representation
+    # ------------------------------------------------------------------------
+
+    x = layers.Dense(
+        256,
+        activation="relu",
+        name="shared_dense_1"
+    )(inputs)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_1"
+    )(x)
+
+    x = layers.Dropout(
+        0.08,
+        name="shared_dropout_1"
+    )(x)
+
+    x = layers.Dense(
+        256,
+        activation="relu",
+        name="shared_dense_2"
+    )(x)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_2"
+    )(x)
+
+    x = layers.Dropout(
+        0.08,
+        name="shared_dropout_2"
+    )(x)
+
+    x = layers.Dense(
+        128,
+        activation="relu",
+        name="shared_dense_3"
+    )(x)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_3"
+    )(x)
+
+    x = layers.Dense(
+        64,
+        activation="relu",
+        name="shared_dense_4"
+    )(x)
+
+    # ------------------------------------------------------------------------
+    # Explicit max-RSSI branch
+    # ------------------------------------------------------------------------
+
+    max_rssi = layers.Lambda(
+        lambda t: t[:, MAX_RSSI_INDEX:MAX_RSSI_INDEX + 1],
+        name="max_rssi_extract"
+    )(inputs)
+
+    rssi_branch = layers.Dense(
+        16,
+        activation="relu",
+        name="rssi_branch_dense"
+    )(max_rssi)
+
+    rssi_branch = layers.LayerNormalization(
+        name="rssi_branch_ln"
+    )(rssi_branch)
+
+    # ------------------------------------------------------------------------
+    # Differentiable threshold features
+    #
+    # These are soft versions of:
+    #
+    #   max_rssi >= -75
+    #   max_rssi >= -65
+    #   max_rssi >= -55
+    #
+    # The model can combine these with the full WAP representation.
+    # ------------------------------------------------------------------------
+
+    t75 = float(threshold_scaled[0])
+    t65 = float(threshold_scaled[1])
+    t55 = float(threshold_scaled[2])
+
+    threshold_features = layers.Lambda(
+        lambda t: tf.concat(
+            [
+                tf.sigmoid(40.0 * (t - t75)),
+                tf.sigmoid(40.0 * (t - t65)),
+                tf.sigmoid(40.0 * (t - t55))
+            ],
+            axis=1
+        ),
+        name="soft_rssi_thresholds"
+    )(max_rssi)
+
+    # ------------------------------------------------------------------------
+    # Combine learned representation + RSSI information
+    # ------------------------------------------------------------------------
+
+    combined = layers.Concatenate(
+        name="shared_feature_fusion"
+    )(
+        [
+            x,
+            rssi_branch,
+            threshold_features
+        ]
+    )
+
+    # ------------------------------------------------------------------------
+    # Private personalized head
+    # ------------------------------------------------------------------------
+
+    private = layers.Dense(
+        128,
+        activation="relu",
+        name="private_dense"
+    )(combined)
+
+    private = layers.Dropout(
+        0.04,
+        name="private_dropout"
+    )(private)
+
+    private = layers.Dense(
+        64,
+        activation="relu",
+        name="private_dense_2"
+    )(private)
+
+    outputs = layers.Dense(
+        4,
+        activation="softmax",
+        name="classifier"
+    )(private)
+
+    return Model(
+        inputs=inputs,
+        outputs=outputs,
+        name="ThresholdAwareFedPer"
+    )
+
+
+# ============================================================================
+# 7. Shared layers
+# ============================================================================
+
+SHARED_LAYER_NAMES = [
+    "shared_dense_1",
+    "shared_ln_1",
+    "shared_dropout_1",
+
+    "shared_dense_2",
+    "shared_ln_2",
+    "shared_dropout_2",
+
+    "shared_dense_3",
+    "shared_ln_3",
+
+    "shared_dense_4",
+
+    "rssi_branch_dense",
+    "rssi_branch_ln",
+
+    "shared_feature_fusion"
+]
+
+# IMPORTANT:
+# Lambda layers contain no trainable weights, so they are not included.
+
+# ============================================================================
+# 8. Model weight helper functions
+# ============================================================================
+
+def get_shared_weights(model):
+
+    result = {}
+
+    for layer_name in SHARED_LAYER_NAMES:
+
+        layer = model.get_layer(
+            layer_name
+        )
+
+        result[layer_name] = [
+            w.copy()
+            for w in layer.get_weights()
+        ]
+
+    return result
+
+
+def set_shared_weights(
+    model,
+    shared_weights
+):
+
+    for layer_name, weights in shared_weights.items():
+
+        model.get_layer(
+            layer_name
+        ).set_weights(weights)
+
+
+def federated_average(
+    models,
+    sample_counts
+):
+
+    total_samples = float(
+        np.sum(sample_counts)
+    )
+
+    aggregated = {}
+
+    for layer_name in SHARED_LAYER_NAMES:
+
+        weight_lists = [
+            model.get_layer(
+                layer_name
+            ).get_weights()
+            for model in models
+        ]
+
+        num_weight_arrays = len(
+            weight_lists[0]
+        )
+
+        layer_averaged = []
+
+        for weight_index in range(
+            num_weight_arrays
+        ):
+
+            result = None
+
+            for weights, count in zip(
+                weight_lists,
+                sample_counts
+            ):
+
+                contribution = (
+                    weights[weight_index]
+                    *
+                    (float(count) / total_samples)
+                )
+
+                if result is None:
+                    result = contribution.copy()
+                else:
+                    result += contribution
+
+            layer_averaged.append(
+                result
+            )
+
+        aggregated[layer_name] = layer_averaged
+
+    return aggregated
+
+
+# ============================================================================
+# 9. Validation function
+# ============================================================================
+
+def evaluate_validation(
+    client_models
+):
+
+    all_true = []
+    all_pred = []
+    client_accuracies = []
+
+    for client_index in unique_clients:
+
+        indices = np.where(
+            clients_val == client_index
+        )[0]
+
+        if len(indices) == 0:
+            continue
+
+        phone_id = int(
+            d["index_to_client"][int(client_index)]
+        )
+
+        model = client_models[
+            phone_id
+        ]
+
+        probabilities = model.predict(
+            X_val[indices],
+            batch_size=512,
+            verbose=0
+        )
+
+        predictions = np.argmax(
+            probabilities,
+            axis=1
+        )
+
+        truth = y_val[indices]
+
+        client_accuracy = accuracy_score(
+            truth,
+            predictions
+        )
+
+        client_accuracies.append(
+            client_accuracy
+        )
+
+        all_true.extend(
+            truth.tolist()
+        )
+
+        all_pred.extend(
+            predictions.tolist()
+        )
+
+    all_true = np.asarray(
+        all_true
+    )
+
+    all_pred = np.asarray(
+        all_pred
+    )
+
+    return {
+        "mean_client_accuracy":
+            float(
+                np.mean(client_accuracies)
+            ),
+
+        "pooled_accuracy":
+            float(
+                accuracy_score(
+                    all_true,
+                    all_pred
+                )
+            ),
+
+        "balanced_accuracy":
+            float(
+                balanced_accuracy_score(
+                    all_true,
+                    all_pred
+                )
+            ),
+
+        "weighted_f1":
+            float(
+                f1_score(
+                    all_true,
+                    all_pred,
+                    average="weighted"
+                )
+            )
+    }
+
+
+# ============================================================================
+# 10. Training configuration
+# ============================================================================
+
+LEARNING_RATE = 0.0003
+LOCAL_EPOCHS = 4
+BATCH_SIZE = 256
+MAX_ROUNDS = 35
+PATIENCE = 7
+MIN_DELTA = 0.0005
+
+print("\nTraining configuration")
+print("-" * 50)
+print("Learning rate :", LEARNING_RATE)
+print("Local epochs  :", LOCAL_EPOCHS)
+print("Batch size    :", BATCH_SIZE)
+print("Max rounds    :", MAX_ROUNDS)
+print("Patience      :", PATIENCE)
+print("Class weights : NONE")
+
+# ============================================================================
+# 11. Create one personalized model per client
+# ============================================================================
+
+client_models = {}
+
+for client_index in unique_clients:
+
+    phone_id = int(
+        d["index_to_client"][int(client_index)]
+    )
+
+    model = build_threshold_aware_fedper()
+
+    optimizer = Adam(
+        learning_rate=LEARNING_RATE,
+        clipnorm=1.0
+    )
+
+    model.compile(
+        optimizer=optimizer,
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"]
+    )
+
+    client_models[
+        phone_id
+    ] = model
+
+# ============================================================================
+# 12. Federated training
+# ============================================================================
+
+best_val_score = -np.inf
+best_round = 0
+best_state = None
+rounds_without_improvement = 0
+
+history = []
+
+print("\n" + "=" * 80)
+print("FEDERATED TRAINING")
+print("=" * 80)
+
+for round_number in range(
+    1,
+    MAX_ROUNDS + 1
+):
+
+    local_models = []
+    local_sizes = []
+
+    # ========================================================================
+    # LOCAL CLIENT TRAINING
+    # ========================================================================
+
+    for client_index in unique_clients:
+
+        client_index = int(
+            client_index
+        )
+
+        train_indices = np.where(
+            clients_train == client_index
+        )[0]
+
+        if len(train_indices) == 0:
+            continue
+
+        phone_id = int(
+            d["index_to_client"][client_index]
+        )
+
+        model = client_models[
+            phone_id
+        ]
+
+        model.fit(
+            X_train[train_indices],
+            y_train[train_indices],
+            epochs=LOCAL_EPOCHS,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+            verbose=0
+        )
+
+        local_models.append(
+            model
+        )
+
+        local_sizes.append(
+            len(train_indices)
+        )
+
+    # ========================================================================
+    # FEDPER SHARED AGGREGATION
+    # ========================================================================
+
+    aggregated_shared = federated_average(
+        local_models,
+        local_sizes
+    )
+
+    # Sync the aggregated shared representation
+    # while preserving each client's private head.
+
+    for phone_id, model in client_models.items():
+
+        set_shared_weights(
+            model,
+            aggregated_shared
+        )
+
+    # ========================================================================
+    # VALIDATION
+    # ========================================================================
+
+    metrics = evaluate_validation(
+        client_models
+    )
+
+    history.append({
+        "round": round_number,
+        **metrics
+    })
+
+    print(
+        f"Round {round_number:02d} | "
+        f"Mean Client Val: "
+        f"{metrics['mean_client_accuracy']:.4f} | "
+        f"Pooled Val: "
+        f"{metrics['pooled_accuracy']:.4f} | "
+        f"Balanced: "
+        f"{metrics['balanced_accuracy']:.4f} | "
+        f"Weighted F1: "
+        f"{metrics['weighted_f1']:.4f}"
+    )
+
+    # ========================================================================
+    # BEST ROUND
+    #
+    # Primary criterion = pooled validation accuracy.
+    # Secondary information = mean-client validation accuracy.
+    # ========================================================================
+
+    score = metrics[
+        "pooled_accuracy"
+    ]
+
+    if score > best_val_score + MIN_DELTA:
+
+        best_val_score = score
+        best_round = round_number
+        rounds_without_improvement = 0
+
+        best_state = {
+            phone_id:
+            [
+                w.copy()
+                for w in model.get_weights()
+            ]
+            for phone_id, model
+            in client_models.items()
+        }
+
+    else:
+
+        rounds_without_improvement += 1
+
+    # ========================================================================
+    # EARLY STOPPING
+    # ========================================================================
+
+    if rounds_without_improvement >= PATIENCE:
+
+        print(
+            "\nEarly stopping triggered at "
+            f"round {round_number}."
+        )
+
+        break
+
+# ============================================================================
+# 13. Restore best validation state
+# ============================================================================
+
+if best_state is None:
+
+    raise RuntimeError(
+        "No valid best model state was captured."
+    )
+
+for phone_id, weights in best_state.items():
+
+    client_models[
+        phone_id
+    ].set_weights(
+        weights
+    )
+
+# ============================================================================
+# 14. Final validation evaluation
+# ============================================================================
+
+final_val_metrics = evaluate_validation(
+    client_models
+)
+
+# ============================================================================
+# 15. Save best models
+# ============================================================================
+
+output_dir = (
+    "/content/threshold_aware_fedper_best"
+)
+
+os.makedirs(
+    output_dir,
+    exist_ok=True
+)
+
+# Save every personalized model
+for phone_id, model in client_models.items():
+
+    model.save(
+        os.path.join(
+            output_dir,
+            f"client_PHONEID_{phone_id}.keras"
+        )
+    )
+
+# Save history
+history_df = pd.DataFrame(
+    history
+)
+
+history_path = (
+    "/content/threshold_aware_fedper_validation_history.csv"
+)
+
+history_df.to_csv(
+    history_path,
+    index=False
+)
+
+# Save configuration and validation results
+summary = {
+    "learning_rate": LEARNING_RATE,
+    "local_epochs": LOCAL_EPOCHS,
+    "batch_size": BATCH_SIZE,
+    "max_rounds": MAX_ROUNDS,
+    "best_round": best_round,
+
+    "mean_client_validation_accuracy":
+        final_val_metrics[
+            "mean_client_accuracy"
+        ],
+
+    "pooled_validation_accuracy":
+        final_val_metrics[
+            "pooled_accuracy"
+        ],
+
+    "balanced_validation_accuracy":
+        final_val_metrics[
+            "balanced_accuracy"
+        ],
+
+    "weighted_f1":
+        final_val_metrics[
+            "weighted_f1"
+        ],
+
+    "rule_based_validation_accuracy":
+        0.967893
+}
+
+summary_path = (
+    "/content/threshold_aware_fedper_validation_summary.pkl"
+)
+
+with open(
+    summary_path,
+    "wb"
+) as f:
+
+    pickle.dump(
+        summary,
+        f
+    )
+
+# ============================================================================
+# 16. Display final result
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("BEST THRESHOLD-AWARE FEDPER RESULT")
+print("=" * 80)
+
+print(
+    "Best round:",
+    best_round
+)
+
+print(
+    "Mean-client validation accuracy:",
+    f"{final_val_metrics['mean_client_accuracy'] * 100:.4f}%"
+)
+
+print(
+    "Pooled validation accuracy:",
+    f"{final_val_metrics['pooled_accuracy'] * 100:.4f}%"
+)
+
+print(
+    "Balanced validation accuracy:",
+    f"{final_val_metrics['balanced_accuracy'] * 100:.4f}%"
+)
+
+print(
+    "Weighted F1:",
+    f"{final_val_metrics['weighted_f1'] * 100:.4f}%"
+)
+
+print(
+    "\nRule-based validation reference:",
+    "96.7893%"
+)
+
+print("\nSaved models:", output_dir)
+print("Saved history:", history_path)
+print("Saved summary:", summary_path)
+
+print("\n" + "=" * 80)
+print("STEP 16 COMPLETED")
+print("=" * 80)
+
+print(
+    "TEST DATA WAS NOT USED FOR TRAINING OR MODEL SELECTION."
+)
+
+CELL 17
+MATCHES: best_hybrid_fedper_strategy, threshold_aware_fedper_best
+------------------------------------------------------------------------------------------
+# ============================================================================
+# STEP 17: ROBUST HYBRID FEDPER + RSSI-RULE OPTIMIZATION
+# ============================================================================
+#
+# IMPORTANT:
+#   TEST DATA IS NOT LOADED OR USED.
+#
+# The Step 16 .keras files contain Lambda layers whose output shape was not
+# explicitly stored. Instead of deserializing those models, we:
+#
+#   1. Rebuild the EXACT Step 16 architecture
+#   2. Give the Lambda layers explicit output shapes
+#   3. Load ONLY the trained weights
+#
+# This avoids the Keras Lambda deserialization problem.
+# ============================================================================
+
+import os
+import re
+import gc
+import pickle
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+from tensorflow.keras import layers, Model
+from tensorflow.keras.optimizers import Adam
+
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score
+)
+
+print("=" * 80)
+print("STEP 17: ROBUST HYBRID FEDPER + RSSI-RULE OPTIMIZATION")
+print("=" * 80)
+
+# ============================================================================
+# 1. Paths
+# ============================================================================
+
+DATA_PATH = "/content/federated_data_3way_final.pkl"
+SCALER_PATH = "/content/centralized_wireless_scaler.pkl"
+MODEL_DIR = "/content/threshold_aware_fedper_best"
+
+# ============================================================================
+# 2. Load preprocessing information
+# ============================================================================
+
+with open(DATA_PATH, "rb") as f:
+    d17 = pickle.load(f)
+
+with open(SCALER_PATH, "rb") as f:
+    scaler17 = pickle.load(f)
+
+X_val = np.asarray(
+    d17["X_val"],
+    dtype=np.float32
+)
+
+y_val = np.asarray(
+    d17["y_val"],
+    dtype=np.int64
+)
+
+clients_val = np.asarray(
+    d17["clients_val"],
+    dtype=np.int64
+)
+
+selected_features17 = list(
+    d17["selected_features"]
+)
+
+signal_feature_names17 = list(
+    d17["signal_feature_names"]
+)
+
+print("\nValidation data")
+print("-" * 50)
+print("X_val:", X_val.shape)
+print("y_val:", y_val.shape)
+print("TEST DATA: NOT LOADED")
+
+# ============================================================================
+# 3. Check dimensions
+# ============================================================================
+
+NUM_WAP_FEATURES = len(
+    selected_features17
+)
+
+NUM_SIGNAL_FEATURES = len(
+    signal_feature_names17
+)
+
+NUM_TOTAL_FEATURES = (
+    NUM_WAP_FEATURES
+    +
+    NUM_SIGNAL_FEATURES
+)
+
+if NUM_TOTAL_FEATURES != 472:
+    raise ValueError(
+        f"Expected 472 features, found {NUM_TOTAL_FEATURES}"
+    )
+
+print(
+    "\nWAP features      :",
+    NUM_WAP_FEATURES
+)
+
+print(
+    "Signal features   :",
+    NUM_SIGNAL_FEATURES
+)
+
+print(
+    "Total features    :",
+    NUM_TOTAL_FEATURES
+)
+
+# ============================================================================
+# 4. max_rssi position
+# ============================================================================
+
+if "max_rssi" not in signal_feature_names17:
+    raise ValueError(
+        "max_rssi not found."
+    )
+
+MAX_RSSI_INDEX = (
+    NUM_WAP_FEATURES
+    +
+    signal_feature_names17.index(
+        "max_rssi"
+    )
+)
+
+print(
+    "max_rssi index    :",
+    MAX_RSSI_INDEX
+)
+
+# ============================================================================
+# 5. Recover original validation max_rssi
+# ============================================================================
+
+temp_val = np.zeros(
+    (len(X_val), NUM_TOTAL_FEATURES),
+    dtype=np.float32
+)
+
+temp_val[:, MAX_RSSI_INDEX] = (
+    X_val[:, MAX_RSSI_INDEX]
+)
+
+val_raw = scaler17.inverse_transform(
+    temp_val
+)[:, MAX_RSSI_INDEX]
+
+print(
+    "max_rssi range    :",
+    f"{val_raw.min():.2f} to {val_raw.max():.2f} dBm"
+)
+
+# ============================================================================
+# 6. Original deterministic RSSI rule
+# ============================================================================
+
+def rssi_rule_prediction(
+    max_rssi_values
+):
+
+    predictions = np.full(
+        len(max_rssi_values),
+        3,
+        dtype=np.int64
+    )
+
+    # Excellent:
+    # max_rssi >= -55
+
+    # Good:
+    # -65 <= max_rssi < -55
+    predictions[
+        max_rssi_values < -55
+    ] = 2
+
+    # Fair:
+    # -75 <= max_rssi < -65
+    predictions[
+        max_rssi_values < -65
+    ] = 1
+
+    # Poor:
+    # max_rssi < -75
+    predictions[
+        max_rssi_values < -75
+    ] = 0
+
+    return predictions
+
+
+rule_predictions = rssi_rule_prediction(
+    val_raw
+)
+
+rule_accuracy = accuracy_score(
+    y_val,
+    rule_predictions
+)
+
+rule_balanced = balanced_accuracy_score(
+    y_val,
+    rule_predictions
+)
+
+rule_f1 = f1_score(
+    y_val,
+    rule_predictions,
+    average="weighted"
+)
+
+print("\n" + "=" * 80)
+print("RSSI RULE BASELINE")
+print("=" * 80)
+
+print(
+    "Accuracy          :",
+    f"{rule_accuracy * 100:.4f}%"
+)
+
+print(
+    "Balanced Accuracy :",
+    f"{rule_balanced * 100:.4f}%"
+)
+
+print(
+    "Weighted F1       :",
+    f"{rule_f1 * 100:.4f}%"
+)
+
+# ============================================================================
+# 7. Convert threshold values to scaled units
+# ============================================================================
+
+raw_thresholds = np.array(
+    [-75.0, -65.0, -55.0],
+    dtype=np.float32
+)
+
+scaled_thresholds = (
+    raw_thresholds
+    *
+    scaler17.scale_[MAX_RSSI_INDEX]
+    +
+    scaler17.min_[MAX_RSSI_INDEX]
+)
+
+print("\nScaled thresholds:")
+
+for raw, scaled in zip(
+    raw_thresholds,
+    scaled_thresholds
+):
+
+    print(
+        f"  {raw:7.2f} dBm -> {scaled:.6f}"
+    )
+
+# ============================================================================
+# 8. Rebuild EXACT Step 16 model
+# ============================================================================
+#
+# Critical difference:
+#
+#   output_shape=(1,)
+#   output_shape=(3,)
+#
+# is explicitly supplied for the Lambda layers.
+#
+# This makes the architecture safely constructible.
+# ============================================================================
+
+def build_step16_model():
+
+    inputs = layers.Input(
+        shape=(472,),
+        name="input"
+    )
+
+    # ------------------------------------------------------------------------
+    # Shared representation
+    # ------------------------------------------------------------------------
+
+    x = layers.Dense(
+        256,
+        activation="relu",
+        name="shared_dense_1"
+    )(inputs)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_1"
+    )(x)
+
+    x = layers.Dropout(
+        0.08,
+        name="shared_dropout_1"
+    )(x)
+
+    x = layers.Dense(
+        256,
+        activation="relu",
+        name="shared_dense_2"
+    )(x)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_2"
+    )(x)
+
+    x = layers.Dropout(
+        0.08,
+        name="shared_dropout_2"
+    )(x)
+
+    x = layers.Dense(
+        128,
+        activation="relu",
+        name="shared_dense_3"
+    )(x)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_3"
+    )(x)
+
+    x = layers.Dense(
+        64,
+        activation="relu",
+        name="shared_dense_4"
+    )(x)
+
+    # ------------------------------------------------------------------------
+    # max_rssi extraction
+    # ------------------------------------------------------------------------
+
+    max_rssi = layers.Lambda(
+        lambda t:
+        t[:, MAX_RSSI_INDEX:MAX_RSSI_INDEX + 1],
+        output_shape=(1,),
+        name="max_rssi_extract"
+    )(inputs)
+
+    # ------------------------------------------------------------------------
+    # RSSI branch
+    # ------------------------------------------------------------------------
+
+    rssi_branch = layers.Dense(
+        16,
+        activation="relu",
+        name="rssi_branch_dense"
+    )(max_rssi)
+
+    rssi_branch = layers.LayerNormalization(
+        name="rssi_branch_ln"
+    )(rssi_branch)
+
+    # ------------------------------------------------------------------------
+    # Differentiable thresholds
+    # ------------------------------------------------------------------------
+
+    t75 = float(
+        scaled_thresholds[0]
+    )
+
+    t65 = float(
+        scaled_thresholds[1]
+    )
+
+    t55 = float(
+        scaled_thresholds[2]
+    )
+
+    threshold_features = layers.Lambda(
+        lambda t:
+        tf.concat(
+            [
+                tf.sigmoid(
+                    40.0 * (t - t75)
+                ),
+
+                tf.sigmoid(
+                    40.0 * (t - t65)
+                ),
+
+                tf.sigmoid(
+                    40.0 * (t - t55)
+                )
+            ],
+            axis=1
+        ),
+        output_shape=(3,),
+        name="soft_rssi_thresholds"
+    )(max_rssi)
+
+    # ------------------------------------------------------------------------
+    # Feature fusion
+    # ------------------------------------------------------------------------
+
+    combined = layers.Concatenate(
+        name="shared_feature_fusion"
+    )(
+        [
+            x,
+            rssi_branch,
+            threshold_features
+        ]
+    )
+
+    # ------------------------------------------------------------------------
+    # Personalized private head
+    # ------------------------------------------------------------------------
+
+    private = layers.Dense(
+        128,
+        activation="relu",
+        name="private_dense"
+    )(combined)
+
+    private = layers.Dropout(
+        0.04,
+        name="private_dropout"
+    )(private)
+
+    private = layers.Dense(
+        64,
+        activation="relu",
+        name="private_dense_2"
+    )(private)
+
+    outputs = layers.Dense(
+        4,
+        activation="softmax",
+        name="classifier"
+    )(private)
+
+    model = Model(
+        inputs=inputs,
+        outputs=outputs,
+        name="ThresholdAwareFedPer"
+    )
+
+    return model
+
+# ============================================================================
+# 9. Locate personalized model files
+# ============================================================================
+
+if not os.path.isdir(MODEL_DIR):
+
+    raise FileNotFoundError(
+        MODEL_DIR
+    )
+
+model_files = sorted([
+    filename
+    for filename in os.listdir(MODEL_DIR)
+    if filename.endswith(".keras")
+])
+
+if len(model_files) == 0:
+
+    raise FileNotFoundError(
+        "No personalized .keras files were found."
+    )
+
+print(
+    "\nPersonalized model files:",
+    len(model_files)
+)
+
+# ============================================================================
+# 10. Load weights only
+# ============================================================================
+
+client_models17 = {}
+
+for filename in model_files:
+
+    match = re.search(
+        r"PHONEID_(\d+)",
+        filename
+    )
+
+    if match is None:
+        continue
+
+    phone_id = int(
+        match.group(1)
+    )
+
+    model_path = os.path.join(
+        MODEL_DIR,
+        filename
+    )
+
+    print(
+        f"Building/loading PHONEID {phone_id} ...",
+        end=" "
+    )
+
+    # Build fresh architecture
+    model = build_step16_model()
+
+    # Compile so the model is fully initialized.
+    model.compile(
+        optimizer=Adam(
+            learning_rate=0.0003
+        ),
+        loss="sparse_categorical_crossentropy"
+    )
+
+    # IMPORTANT:
+    # load_weights reads the learned parameters without deserializing
+    # the problematic Lambda layer configuration from the complete model.
+    model.load_weights(
+        model_path
+    )
+
+    client_models17[
+        phone_id
+    ] = model
+
+    print("OK")
+
+print(
+    "\nLoaded personalized clients:",
+    len(client_models17)
+)
+
+print(
+    "PHONEIDs:",
+    sorted(client_models17.keys())
+)
+
+# ============================================================================
+# 11. Generate neural validation probabilities
+# ============================================================================
+
+neural_probabilities = np.zeros(
+    (len(X_val), 4),
+    dtype=np.float32
+)
+
+print(
+    "\nGenerating neural validation predictions..."
+)
+
+for client_index in sorted(
+    np.unique(clients_val)
+):
+
+    client_index = int(
+        client_index
+    )
+
+    indices = np.where(
+        clients_val == client_index
+    )[0]
+
+    phone_id = int(
+        d17["index_to_client"][client_index]
+    )
+
+    if phone_id not in client_models17:
+
+        raise ValueError(
+            f"Missing model for PHONEID {phone_id}"
+        )
+
+    model = client_models17[
+        phone_id
+    ]
+
+    probabilities = model.predict(
+        X_val[indices],
+        batch_size=512,
+        verbose=0
+    )
+
+    neural_probabilities[
+        indices
+    ] = probabilities
+
+neural_predictions = np.argmax(
+    neural_probabilities,
+    axis=1
+)
+
+neural_accuracy = accuracy_score(
+    y_val,
+    neural_predictions
+)
+
+neural_balanced = balanced_accuracy_score(
+    y_val,
+    neural_predictions
+)
+
+neural_f1 = f1_score(
+    y_val,
+    neural_predictions,
+    average="weighted"
+)
+
+print("\nThreshold-aware FedPer:")
+print(
+    "Accuracy          :",
+    f"{neural_accuracy * 100:.4f}%"
+)
+
+print(
+    "Balanced Accuracy :",
+    f"{neural_balanced * 100:.4f}%"
+)
+
+print(
+    "Weighted F1       :",
+    f"{neural_f1 * 100:.4f}%"
+)
+
+# ============================================================================
+# 12. Compare rule and neural predictions
+# ============================================================================
+
+rule_correct = (
+    rule_predictions == y_val
+)
+
+neural_correct = (
+    neural_predictions == y_val
+)
+
+print("\n" + "=" * 80)
+print("RULE / NEURAL OVERLAP")
+print("=" * 80)
+
+print(
+    "Both correct        :",
+    int(np.sum(
+        rule_correct & neural_correct
+    ))
+)
+
+print(
+    "Rule only correct   :",
+    int(np.sum(
+        rule_correct & ~neural_correct
+    ))
+)
+
+print(
+    "Neural only correct :",
+    int(np.sum(
+        neural_correct & ~rule_correct
+    ))
+)
+
+print(
+    "Both wrong          :",
+    int(np.sum(
+        ~rule_correct & ~neural_correct
+    ))
+)
+
+# ============================================================================
+# 13. Margin hybrid search
+# ============================================================================
+
+thresholds = np.array(
+    [-75.0, -65.0, -55.0],
+    dtype=np.float32
+)
+
+distance_to_threshold = np.min(
+    np.abs(
+        val_raw[:, None]
+        -
+        thresholds[None, :]
+    ),
+    axis=1
+)
+
+margins = [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    7.5,
+    10.0
+]
+
+hybrid_results = []
+
+print("\n" + "=" * 80)
+print("MARGIN HYBRID SEARCH")
+print("=" * 80)
+
+for margin in margins:
+
+    use_neural = (
+        distance_to_threshold <= margin
+    )
+
+    hybrid_predictions = (
+        rule_predictions.copy()
+    )
+
+    hybrid_predictions[
+        use_neural
+    ] = neural_predictions[
+        use_neural
+    ]
+
+    accuracy = accuracy_score(
+        y_val,
+        hybrid_predictions
+    )
+
+    balanced = balanced_accuracy_score(
+        y_val,
+        hybrid_predictions
+    )
+
+    weighted_f1 = f1_score(
+        y_val,
+        hybrid_predictions,
+        average="weighted"
+    )
+
+    neural_fraction = float(
+        np.mean(use_neural)
+    )
+
+    hybrid_results.append({
+        "strategy": "margin_hybrid",
+        "margin_dbm": margin,
+        "alpha": np.nan,
+        "accuracy": accuracy,
+        "balanced_accuracy": balanced,
+        "weighted_f1": weighted_f1,
+        "neural_fraction": neural_fraction
+    })
+
+    print(
+        f"Margin {margin:5.2f} dBm | "
+        f"Accuracy {accuracy * 100:7.3f}% | "
+        f"Balanced {balanced * 100:7.3f}% | "
+        f"F1 {weighted_f1 * 100:7.3f}% | "
+        f"Neural {neural_fraction * 100:6.2f}%"
+    )
+
+# ============================================================================
+# 14. Probability blending
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("PROBABILITY BLENDING")
+print("=" * 80)
+
+rule_probabilities = np.zeros_like(
+    neural_probabilities
+)
+
+rule_probabilities[
+    np.arange(len(y_val)),
+    rule_predictions
+] = 1.0
+
+alphas = np.arange(
+    0.0,
+    1.0001,
+    0.025
+)
+
+for alpha in alphas:
+
+    blended_probabilities = (
+        alpha * neural_probabilities
+        +
+        (1.0 - alpha)
+        * rule_probabilities
+    )
+
+    blended_predictions = np.argmax(
+        blended_probabilities,
+        axis=1
+    )
+
+    accuracy = accuracy_score(
+        y_val,
+        blended_predictions
+    )
+
+    balanced = balanced_accuracy_score(
+        y_val,
+        blended_predictions
+    )
+
+    weighted_f1 = f1_score(
+        y_val,
+        blended_predictions,
+        average="weighted"
+    )
+
+    hybrid_results.append({
+        "strategy": "probability_blend",
+        "margin_dbm": np.nan,
+        "alpha": alpha,
+        "accuracy": accuracy,
+        "balanced_accuracy": balanced,
+        "weighted_f1": weighted_f1,
+        "neural_fraction": alpha
+    })
+
+    print(
+        f"Alpha {alpha:5.3f} | "
+        f"Accuracy {accuracy * 100:7.3f}% | "
+        f"Balanced {balanced * 100:7.3f}% | "
+        f"F1 {weighted_f1 * 100:7.3f}%"
+    )
+
+# ============================================================================
+# 15. Find best hybrid strategy
+# ============================================================================
+
+results_df = pd.DataFrame(
+    hybrid_results
+)
+
+results_df = results_df.sort_values(
+    [
+        "accuracy",
+        "balanced_accuracy",
+        "weighted_f1"
+    ],
+    ascending=False
+).reset_index(
+    drop=True
+)
+
+best = results_df.iloc[0]
+
+print("\n" + "=" * 80)
+print("BEST VALIDATION HYBRID STRATEGY")
+print("=" * 80)
+
+print(
+    "Strategy:",
+    best["strategy"]
+)
+
+if best["strategy"] == "margin_hybrid":
+
+    print(
+        "Margin:",
+        f"{best['margin_dbm']:.2f} dBm"
+    )
+
+else:
+
+    print(
+        "Alpha:",
+        f"{best['alpha']:.3f}"
+    )
+
+print(
+    "Accuracy:",
+    f"{best['accuracy'] * 100:.4f}%"
+)
+
+print(
+    "Balanced accuracy:",
+    f"{best['balanced_accuracy'] * 100:.4f}%"
+)
+
+print(
+    "Weighted F1:",
+    f"{best['weighted_f1'] * 100:.4f}%"
+)
+
+# ============================================================================
+# 16. Compare the three methods
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("FINAL VALIDATION COMPARISON")
+print("=" * 80)
+
+print(
+    f"{'RSSI Rule':30s}: "
+    f"{rule_accuracy * 100:.4f}%"
+)
+
+print(
+    f"{'Threshold-Aware FedPer':30s}: "
+    f"{neural_accuracy * 100:.4f}%"
+)
+
+print(
+    f"{'Best Hybrid':30s}: "
+    f"{best['accuracy'] * 100:.4f}%"
+)
+
+# ============================================================================
+# 17. Save selected strategy
+# ============================================================================
+
+best_strategy = {
+    "strategy": str(
+        best["strategy"]
+    ),
+
+    "margin_dbm": (
+        None
+        if pd.isna(best["margin_dbm"])
+        else float(best["margin_dbm"])
+    ),
+
+    "alpha": (
+        None
+        if pd.isna(best["alpha"])
+        else float(best["alpha"])
+    ),
+
+    "validation_accuracy":
+        float(best["accuracy"]),
+
+    "validation_balanced_accuracy":
+        float(best["balanced_accuracy"]),
+
+    "validation_weighted_f1":
+        float(best["weighted_f1"])
+}
+
+strategy_path = (
+    "/content/best_hybrid_fedper_strategy.pkl"
+)
+
+with open(
+    strategy_path,
+    "wb"
+) as f:
+
+    pickle.dump(
+        best_strategy,
+        f
+    )
+
+results_path = (
+    "/content/hybrid_fedper_validation_results.csv"
+)
+
+results_df.to_csv(
+    results_path,
+    index=False
+)
+
+print("\nSaved:")
+print(strategy_path)
+print(results_path)
+
+# ============================================================================
+# 18. Cleanup
+# ============================================================================
+
+del neural_probabilities
+gc.collect()
+
+print("\n" + "=" * 80)
+print("STEP 17 COMPLETED")
+print("=" * 80)
+
+print("TRAINING DATA USED : NO")
+print("VALIDATION USED    : YES")
+print("TEST DATA USED     : NO")
+
+print(
+    "\nBest hybrid strategy selected using validation only."
+)
+
+CELL 18
+MATCHES: best_hybrid_fedper_strategy, threshold_aware_fedper_best
+------------------------------------------------------------------------------------------
+# ============================================================================
+# STEP 18: FINAL UNTOUCHED TEST EVALUATION
+# ============================================================================
+#
+# LOCKED BEFORE TEST:
+#   Hybrid strategy = margin_hybrid
+#   Margin          = 0.25 dBm
+#
+# Test is used ONLY NOW for final evaluation.
+# No tuning is performed after this.
+# ============================================================================
+
+import os
+import re
+import pickle
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+from tensorflow.keras import layers, Model
+from tensorflow.keras.optimizers import Adam
+
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    confusion_matrix,
+    classification_report
+)
+
+print("=" * 80)
+print("STEP 18: FINAL UNTOUCHED TEST EVALUATION")
+print("=" * 80)
+
+# ============================================================================
+# 1. Paths
+# ============================================================================
+
+DATA_PATH = "/content/federated_data_3way_final.pkl"
+SCALER_PATH = "/content/centralized_wireless_scaler.pkl"
+MODEL_DIR = "/content/threshold_aware_fedper_best"
+STRATEGY_PATH = "/content/best_hybrid_fedper_strategy.pkl"
+
+# ============================================================================
+# 2. Load FINAL TEST DATA
+# ============================================================================
+
+with open(DATA_PATH, "rb") as f:
+    d18 = pickle.load(f)
+
+with open(SCALER_PATH, "rb") as f:
+    scaler18 = pickle.load(f)
+
+with open(STRATEGY_PATH, "rb") as f:
+    strategy18 = pickle.load(f)
+
+X_test = np.asarray(
+    d18["X_test"],
+    dtype=np.float32
+)
+
+y_test = np.asarray(
+    d18["y_test"],
+    dtype=np.int64
+)
+
+clients_test = np.asarray(
+    d18["clients_test"],
+    dtype=np.int64
+)
+
+selected_features18 = list(
+    d18["selected_features"]
+)
+
+signal_feature_names18 = list(
+    d18["signal_feature_names"]
+)
+
+print("\nFINAL TEST DATA")
+print("-" * 50)
+print("X_test:", X_test.shape)
+print("y_test:", y_test.shape)
+print(
+    "Test clients:",
+    len(np.unique(clients_test))
+)
+
+print(
+    "\nTest data is being used ONLY for final evaluation."
+)
+
+# ============================================================================
+# 3. Verify locked strategy
+# ============================================================================
+
+locked_strategy = strategy18["strategy"]
+locked_margin = strategy18["margin_dbm"]
+
+print("\nLOCKED HYBRID STRATEGY")
+print("-" * 50)
+print("Strategy:", locked_strategy)
+print("Margin  :", locked_margin, "dBm")
+
+if locked_strategy != "margin_hybrid":
+    raise ValueError(
+        "Unexpected strategy. Expected margin_hybrid."
+    )
+
+if abs(
+    float(locked_margin) - 0.25
+) > 1e-9:
+
+    raise ValueError(
+        f"Expected locked margin 0.25 dBm, "
+        f"found {locked_margin}"
+    )
+
+# ============================================================================
+# 4. Locate max_rssi
+# ============================================================================
+
+NUM_WAP_FEATURES = len(
+    selected_features18
+)
+
+MAX_RSSI_INDEX = (
+    NUM_WAP_FEATURES
+    +
+    signal_feature_names18.index(
+        "max_rssi"
+    )
+)
+
+print(
+    "\nmax_rssi feature index:",
+    MAX_RSSI_INDEX
+)
+
+if MAX_RSSI_INDEX != 465:
+    raise ValueError(
+        f"Expected max_rssi index 465, "
+        f"found {MAX_RSSI_INDEX}"
+    )
+
+# ============================================================================
+# 5. Recover original test max_rssi
+# ============================================================================
+
+temp_test = np.zeros(
+    (len(X_test), 472),
+    dtype=np.float32
+)
+
+temp_test[:, MAX_RSSI_INDEX] = (
+    X_test[:, MAX_RSSI_INDEX]
+)
+
+test_raw = scaler18.inverse_transform(
+    temp_test
+)[:, MAX_RSSI_INDEX]
+
+print(
+    "max_rssi range:",
+    f"{test_raw.min():.2f} to {test_raw.max():.2f} dBm"
+)
+
+# ============================================================================
+# 6. Deterministic RSSI rule
+# ============================================================================
+
+def rssi_rule_prediction(
+    max_rssi_values
+):
+
+    predictions = np.full(
+        len(max_rssi_values),
+        3,
+        dtype=np.int64
+    )
+
+    # Excellent >= -55
+    # Good      >= -65 and < -55
+    # Fair      >= -75 and < -65
+    # Poor      < -75
+
+    predictions[
+        max_rssi_values < -55
+    ] = 2
+
+    predictions[
+        max_rssi_values < -65
+    ] = 1
+
+    predictions[
+        max_rssi_values < -75
+    ] = 0
+
+    return predictions
+
+
+rule_predictions = rssi_rule_prediction(
+    test_raw
+)
+
+# ============================================================================
+# 7. Rebuild EXACT Step 16 architecture
+# ============================================================================
+#
+# We avoid Lambda deserialization and load trained weights only.
+# ============================================================================
+
+raw_thresholds = np.array(
+    [-75.0, -65.0, -55.0],
+    dtype=np.float32
+)
+
+scaled_thresholds = (
+    raw_thresholds
+    * scaler18.scale_[MAX_RSSI_INDEX]
+    +
+    scaler18.min_[MAX_RSSI_INDEX]
+)
+
+def build_step16_model():
+
+    inputs = layers.Input(
+        shape=(472,),
+        name="input"
+    )
+
+    # ------------------------------------------------------------------------
+    # Shared representation
+    # ------------------------------------------------------------------------
+
+    x = layers.Dense(
+        256,
+        activation="relu",
+        name="shared_dense_1"
+    )(inputs)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_1"
+    )(x)
+
+    x = layers.Dropout(
+        0.08,
+        name="shared_dropout_1"
+    )(x)
+
+    x = layers.Dense(
+        256,
+        activation="relu",
+        name="shared_dense_2"
+    )(x)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_2"
+    )(x)
+
+    x = layers.Dropout(
+        0.08,
+        name="shared_dropout_2"
+    )(x)
+
+    x = layers.Dense(
+        128,
+        activation="relu",
+        name="shared_dense_3"
+    )(x)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_3"
+    )(x)
+
+    x = layers.Dense(
+        64,
+        activation="relu",
+        name="shared_dense_4"
+    )(x)
+
+    # ------------------------------------------------------------------------
+    # max_rssi branch
+    # ------------------------------------------------------------------------
+
+    max_rssi = layers.Lambda(
+        lambda t:
+        t[:, MAX_RSSI_INDEX:MAX_RSSI_INDEX + 1],
+        output_shape=(1,),
+        name="max_rssi_extract"
+    )(inputs)
+
+    rssi_branch = layers.Dense(
+        16,
+        activation="relu",
+        name="rssi_branch_dense"
+    )(max_rssi)
+
+    rssi_branch = layers.LayerNormalization(
+        name="rssi_branch_ln"
+    )(rssi_branch)
+
+    # ------------------------------------------------------------------------
+    # Soft thresholds
+    # ------------------------------------------------------------------------
+
+    t75 = float(
+        scaled_thresholds[0]
+    )
+
+    t65 = float(
+        scaled_thresholds[1]
+    )
+
+    t55 = float(
+        scaled_thresholds[2]
+    )
+
+    threshold_features = layers.Lambda(
+        lambda t:
+        tf.concat(
+            [
+                tf.sigmoid(
+                    40.0 * (t - t75)
+                ),
+                tf.sigmoid(
+                    40.0 * (t - t65)
+                ),
+                tf.sigmoid(
+                    40.0 * (t - t55)
+                )
+            ],
+            axis=1
+        ),
+        output_shape=(3,),
+        name="soft_rssi_thresholds"
+    )(max_rssi)
+
+    # ------------------------------------------------------------------------
+    # Fusion
+    # ------------------------------------------------------------------------
+
+    combined = layers.Concatenate(
+        name="shared_feature_fusion"
+    )(
+        [
+            x,
+            rssi_branch,
+            threshold_features
+        ]
+    )
+
+    # ------------------------------------------------------------------------
+    # Private personalized head
+    # ------------------------------------------------------------------------
+
+    private = layers.Dense(
+        128,
+        activation="relu",
+        name="private_dense"
+    )(combined)
+
+    private = layers.Dropout(
+        0.04,
+        name="private_dropout"
+    )(private)
+
+    private = layers.Dense(
+        64,
+        activation="relu",
+        name="private_dense_2"
+    )(private)
+
+    outputs = layers.Dense(
+        4,
+        activation="softmax",
+        name="classifier"
+    )(private)
+
+    return Model(
+        inputs,
+        outputs,
+        name="ThresholdAwareFedPer"
+    )
+
+# ============================================================================
+# 8. Load personalized models by WEIGHTS
+# ============================================================================
+
+client_models18 = {}
+
+model_files = sorted([
+    f
+    for f in os.listdir(MODEL_DIR)
+    if f.endswith(".keras")
+])
+
+print(
+    "\nLoading personalized client weights..."
+)
+
+for filename in model_files:
+
+    match = re.search(
+        r"PHONEID_(\d+)",
+        filename
+    )
+
+    if match is None:
+        continue
+
+    phone_id = int(
+        match.group(1)
+    )
+
+    model_path = os.path.join(
+        MODEL_DIR,
+        filename
+    )
+
+    model = build_step16_model()
+
+    model.compile(
+        optimizer=Adam(
+            learning_rate=0.0003
+        ),
+        loss="sparse_categorical_crossentropy"
+    )
+
+    model.load_weights(
+        model_path
+    )
+
+    client_models18[
+        phone_id
+    ] = model
+
+    print(
+        f"  PHONEID {phone_id}: loaded"
+    )
+
+print(
+    "\nPersonalized models loaded:",
+    len(client_models18)
+)
+
+# ============================================================================
+# 9. Generate personalized neural predictions
+# ============================================================================
+
+neural_probabilities = np.zeros(
+    (len(X_test), 4),
+    dtype=np.float32
+)
+
+print(
+    "\nGenerating neural predictions..."
+)
+
+for client_index in sorted(
+    np.unique(clients_test)
+):
+
+    client_index = int(
+        client_index
+    )
+
+    indices = np.where(
+        clients_test == client_index
+    )[0]
+
+    phone_id = int(
+        d18["index_to_client"][client_index]
+    )
+
+    if phone_id not in client_models18:
+
+        raise ValueError(
+            f"No personalized model found for PHONEID "
+            f"{phone_id}"
+        )
+
+    model = client_models18[
+        phone_id
+    ]
+
+    probabilities = model.predict(
+        X_test[indices],
+        batch_size=512,
+        verbose=0
+    )
+
+    neural_probabilities[
+        indices
+    ] = probabilities
+
+neural_predictions = np.argmax(
+    neural_probabilities,
+    axis=1
+)
+
+# ============================================================================
+# 10. Locked hybrid prediction
+# ============================================================================
+
+thresholds = np.array(
+    [-75.0, -65.0, -55.0],
+    dtype=np.float32
+)
+
+distance_to_threshold = np.min(
+    np.abs(
+        test_raw[:, None]
+        -
+        thresholds[None, :]
+    ),
+    axis=1
+)
+
+use_neural = (
+    distance_to_threshold <=
+    float(locked_margin)
+)
+
+hybrid_predictions = (
+    rule_predictions.copy()
+)
+
+hybrid_predictions[
+    use_neural
+] = neural_predictions[
+    use_neural
+]
+
+# ============================================================================
+# 11. Evaluate all three systems
+# ============================================================================
+
+def calculate_metrics(
+    y_true,
+    predictions
+):
+
+    return {
+        "accuracy":
+            accuracy_score(
+                y_true,
+                predictions
+            ),
+
+        "balanced_accuracy":
+            balanced_accuracy_score(
+                y_true,
+                predictions
+            ),
+
+        "weighted_precision":
+            precision_score(
+                y_true,
+                predictions,
+                average="weighted",
+                zero_division=0
+            ),
+
+        "weighted_recall":
+            recall_score(
+                y_true,
+                predictions,
+                average="weighted",
+                zero_division=0
+            ),
+
+        "weighted_f1":
+            f1_score(
+                y_true,
+                predictions,
+                average="weighted",
+                zero_division=0
+            ),
+
+        "macro_f1":
+            f1_score(
+                y_true,
+                predictions,
+                average="macro",
+                zero_division=0
+            )
+    }
+
+
+rule_metrics = calculate_metrics(
+    y_test,
+    rule_predictions
+)
+
+neural_metrics = calculate_metrics(
+    y_test,
+    neural_predictions
+)
+
+hybrid_metrics = calculate_metrics(
+    y_test,
+    hybrid_predictions
+)
+
+# ============================================================================
+# 12. Final comparison
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("FINAL TEST-SET COMPARISON")
+print("=" * 80)
+
+print(
+    "\nRSSI Rule"
+)
+
+print(
+    "  Accuracy          :",
+    f"{rule_metrics['accuracy'] * 100:.4f}%"
+)
+
+print(
+    "  Balanced Accuracy :",
+    f"{rule_metrics['balanced_accuracy'] * 100:.4f}%"
+)
+
+print(
+    "  Weighted F1       :",
+    f"{rule_metrics['weighted_f1'] * 100:.4f}%"
+)
+
+print(
+    "\nThreshold-Aware FedPer"
+)
+
+print(
+    "  Accuracy          :",
+    f"{neural_metrics['accuracy'] * 100:.4f}%"
+)
+
+print(
+    "  Balanced Accuracy :",
+    f"{neural_metrics['balanced_accuracy'] * 100:.4f}%"
+)
+
+print(
+    "  Weighted F1       :",
+    f"{neural_metrics['weighted_f1'] * 100:.4f}%"
+)
+
+print(
+    "\nLOCKED Hybrid"
+)
+
+print(
+    "  Accuracy          :",
+    f"{hybrid_metrics['accuracy'] * 100:.4f}%"
+)
+
+print(
+    "  Balanced Accuracy :",
+    f"{hybrid_metrics['balanced_accuracy'] * 100:.4f}%"
+)
+
+print(
+    "  Weighted Precision:",
+    f"{hybrid_metrics['weighted_precision'] * 100:.4f}%"
+)
+
+print(
+    "  Weighted Recall   :",
+    f"{hybrid_metrics['weighted_recall'] * 100:.4f}%"
+)
+
+print(
+    "  Weighted F1       :",
+    f"{hybrid_metrics['weighted_f1'] * 100:.4f}%"
+)
+
+print(
+    "  Macro F1          :",
+    f"{hybrid_metrics['macro_f1'] * 100:.4f}%"
+)
+
+# ============================================================================
+# 13. How much neural model was used?
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("HYBRID USAGE")
+print("=" * 80)
+
+print(
+    "Test samples using RSSI rule:",
+    int(np.sum(~use_neural))
+)
+
+print(
+    "Test samples using neural model:",
+    int(np.sum(use_neural))
+)
+
+print(
+    "Neural usage:",
+    f"{np.mean(use_neural) * 100:.4f}%"
+)
+
+# ============================================================================
+# 14. Improvement versus previous FedPer
+# ============================================================================
+
+previous_fedper_accuracy = 0.8916
+
+hybrid_improvement = (
+    hybrid_metrics["accuracy"]
+    -
+    previous_fedper_accuracy
+)
+
+print("\n" + "=" * 80)
+print("IMPROVEMENT OVER PREVIOUS FINAL FEDPER")
+print("=" * 80)
+
+print(
+    "Previous FedPer:",
+    f"{previous_fedper_accuracy * 100:.4f}%"
+)
+
+print(
+    "New hybrid:",
+    f"{hybrid_metrics['accuracy'] * 100:.4f}%"
+)
+
+print(
+    "Improvement:",
+    f"{hybrid_improvement * 100:+.4f} percentage points"
+)
+
+# ============================================================================
+# 15. Per-class test accuracy
+# ============================================================================
+
+CLASS_NAMES = {
+    0: "Poor",
+    1: "Fair",
+    2: "Good",
+    3: "Excellent"
+}
+
+print("\n" + "=" * 80)
+print("HYBRID TEST ACCURACY BY CLASS")
+print("=" * 80)
+
+for class_id in range(4):
+
+    mask = (
+        y_test == class_id
+    )
+
+    class_accuracy = accuracy_score(
+        y_test[mask],
+        hybrid_predictions[mask]
+    )
+
+    print(
+        f"{CLASS_NAMES[class_id]:10s}: "
+        f"{class_accuracy * 100:.4f}% "
+        f"({np.sum(mask)} samples)"
+    )
+
+# ============================================================================
+# 16. Confusion matrix
+# ============================================================================
+
+hybrid_cm = confusion_matrix(
+    y_test,
+    hybrid_predictions,
+    labels=[0, 1, 2, 3]
+)
+
+print("\n" + "=" * 80)
+print("HYBRID TEST CONFUSION MATRIX")
+print("=" * 80)
+
+print(
+    hybrid_cm
+)
+
+# ============================================================================
+# 17. Full classification report
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("HYBRID CLASSIFICATION REPORT")
+print("=" * 80)
+
+print(
+    classification_report(
+        y_test,
+        hybrid_predictions,
+        labels=[0, 1, 2, 3],
+        target_names=[
+            "Poor",
+            "Fair",
+            "Good",
+            "Excellent"
+        ],
+        digits=4,
+        zero_division=0
+    )
+)
+
+# ============================================================================
+# 18. Save final predictions
+# ============================================================================
+
+final_predictions_df = pd.DataFrame({
+    "test_index":
+        np.arange(len(y_test)),
+
+    "phone_id": [
+        int(
+            d18["index_to_client"][int(c)]
+        )
+        for c in clients_test
+    ],
+
+    "max_rssi_dbm":
+        test_raw,
+
+    "rule_prediction":
+        rule_predictions,
+
+    "neural_prediction":
+        neural_predictions,
+
+    "hybrid_prediction":
+        hybrid_predictions,
+
+    "actual_class":
+        y_test,
+
+    "rule_correct":
+        rule_predictions == y_test,
+
+    "neural_correct":
+        neural_predictions == y_test,
+
+    "hybrid_correct":
+        hybrid_predictions == y_test,
+
+    "used_neural":
+        use_neural
+})
+
+predictions_path = (
+    "/content/FINAL_HYBRID_TEST_PREDICTIONS.csv"
+)
+
+final_predictions_df.to_csv(
+    predictions_path,
+    index=False
+)
+
+# ============================================================================
+# 19. Save final metrics
+# ============================================================================
+
+final_metrics = {
+    "strategy": "margin_hybrid",
+    "margin_dbm": float(locked_margin),
+
+    "rule_test_accuracy":
+        rule_metrics["accuracy"],
+
+    "neural_test_accuracy":
+        neural_metrics["accuracy"],
+
+    "hybrid_test_accuracy":
+        hybrid_metrics["accuracy"],
+
+    "hybrid_balanced_accuracy":
+        hybrid_metrics["balanced_accuracy"],
+
+    "hybrid_weighted_precision":
+        hybrid_metrics["weighted_precision"],
+
+    "hybrid_weighted_recall":
+        hybrid_metrics["weighted_recall"],
+
+    "hybrid_weighted_f1":
+        hybrid_metrics["weighted_f1"],
+
+    "hybrid_macro_f1":
+        hybrid_metrics["macro_f1"],
+
+    "neural_usage_fraction":
+        float(np.mean(use_neural)),
+
+    "test_samples":
+        len(y_test)
+}
+
+metrics_path = (
+    "/content/FINAL_HYBRID_TEST_METRICS.pkl"
+)
+
+with open(
+    metrics_path,
+    "wb"
+) as f:
+    pickle.dump(
+        final_metrics,
+        f
+    )
+
+# ============================================================================
+# 20. Final status
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 18 COMPLETED")
+print("=" * 80)
+
+print(
+    "Test set was evaluated after the hybrid strategy was locked."
+)
+
+print(
+    "No test-set tuning was performed."
+)
+
+print(
+    "\nSaved:"
+)
+
+print(
+    predictions_path
+)
+
+print(
+    metrics_path
+)
+
+CELL 19
+MATCHES: predict_final_link_quality, best_hybrid_fedper_strategy, threshold_aware_fedper_best
+------------------------------------------------------------------------------------------
+# ============================================================================
+# STEP 19: FINAL DEPLOYABLE HYBRID PREDICTOR
+# ============================================================================
+#
+# FINAL LOCKED STRATEGY:
+#   margin_hybrid
+#   margin = 0.25 dBm
+#
+# FINAL TEST PERFORMANCE:
+#   Accuracy          = 97.5984%
+#   Balanced Accuracy = 98.1312%
+#   Weighted F1       = 97.6104%
+#
+# IMPORTANT:
+#   No test data is loaded in this deployment cell.
+# ============================================================================
+
+import os
+import re
+import pickle
+import numpy as np
+import tensorflow as tf
+
+from tensorflow.keras import layers, Model
+from tensorflow.keras.optimizers import Adam
+
+print("=" * 80)
+print("STEP 19: FINAL DEPLOYABLE HYBRID PREDICTOR")
+print("=" * 80)
+
+# ============================================================================
+# 1. Paths
+# ============================================================================
+
+DATA_PATH = "/content/federated_data_3way_final.pkl"
+SCALER_PATH = "/content/centralized_wireless_scaler.pkl"
+MODEL_DIR = "/content/threshold_aware_fedper_best"
+STRATEGY_PATH = "/content/best_hybrid_fedper_strategy.pkl"
+
+# ============================================================================
+# 2. Load preprocessing metadata ONLY
+# ============================================================================
+
+with open(DATA_PATH, "rb") as f:
+    deployment_data = pickle.load(f)
+
+with open(SCALER_PATH, "rb") as f:
+    deployment_scaler = pickle.load(f)
+
+with open(STRATEGY_PATH, "rb") as f:
+    deployment_strategy = pickle.load(f)
+
+selected_features = list(
+    deployment_data["selected_features"]
+)
+
+signal_feature_names = list(
+    deployment_data["signal_feature_names"]
+)
+
+print("\nDeployment metadata loaded.")
+
+print(
+    "WAP features     :",
+    len(selected_features)
+)
+
+print(
+    "Signal features  :",
+    len(signal_feature_names)
+)
+
+print(
+    "Total features   :",
+    len(selected_features) + len(signal_feature_names)
+)
+
+# ============================================================================
+# 3. Locked strategy verification
+# ============================================================================
+
+LOCKED_MARGIN = float(
+    deployment_strategy["margin_dbm"]
+)
+
+if deployment_strategy["strategy"] != "margin_hybrid":
+    raise ValueError(
+        "Deployment strategy is not margin_hybrid."
+    )
+
+if abs(LOCKED_MARGIN - 0.25) > 1e-9:
+    raise ValueError(
+        f"Expected 0.25 dBm margin, "
+        f"found {LOCKED_MARGIN}."
+    )
+
+print("\nLocked strategy:")
+print(
+    "  Strategy :",
+    deployment_strategy["strategy"]
+)
+
+print(
+    "  Margin   :",
+    LOCKED_MARGIN,
+    "dBm"
+)
+
+# ============================================================================
+# 4. Feature positions
+# ============================================================================
+
+NUM_WAP = len(
+    selected_features
+)
+
+MAX_RSSI_INDEX = (
+    NUM_WAP
+    +
+    signal_feature_names.index(
+        "max_rssi"
+    )
+)
+
+if MAX_RSSI_INDEX != 465:
+    raise ValueError(
+        f"Expected max_rssi at position 465, "
+        f"found {MAX_RSSI_INDEX}."
+    )
+
+# ============================================================================
+# 5. Class names
+# ============================================================================
+
+CLASS_NAMES = {
+    0: "Poor",
+    1: "Fair",
+    2: "Good",
+    3: "Excellent"
+}
+
+# ============================================================================
+# 6. RSSI thresholds
+# ============================================================================
+
+THRESHOLDS = np.array(
+    [-75.0, -65.0, -55.0],
+    dtype=np.float32
+)
+
+# ============================================================================
+# 7. Rebuild EXACT Step 16 model architecture
+# ============================================================================
+
+scaled_thresholds = (
+    THRESHOLDS
+    * deployment_scaler.scale_[MAX_RSSI_INDEX]
+    +
+    deployment_scaler.min_[MAX_RSSI_INDEX]
+)
+
+def build_step16_deployment_model():
+
+    inputs = layers.Input(
+        shape=(472,),
+        name="input"
+    )
+
+    # ------------------------------------------------------------------------
+    # Shared representation
+    # ------------------------------------------------------------------------
+
+    x = layers.Dense(
+        256,
+        activation="relu",
+        name="shared_dense_1"
+    )(inputs)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_1"
+    )(x)
+
+    x = layers.Dropout(
+        0.08,
+        name="shared_dropout_1"
+    )(x)
+
+    x = layers.Dense(
+        256,
+        activation="relu",
+        name="shared_dense_2"
+    )(x)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_2"
+    )(x)
+
+    x = layers.Dropout(
+        0.08,
+        name="shared_dropout_2"
+    )(x)
+
+    x = layers.Dense(
+        128,
+        activation="relu",
+        name="shared_dense_3"
+    )(x)
+
+    x = layers.LayerNormalization(
+        name="shared_ln_3"
+    )(x)
+
+    x = layers.Dense(
+        64,
+        activation="relu",
+        name="shared_dense_4"
+    )(x)
+
+    # ------------------------------------------------------------------------
+    # max_rssi branch
+    # ------------------------------------------------------------------------
+
+    max_rssi = layers.Lambda(
+        lambda t:
+        t[:, MAX_RSSI_INDEX:MAX_RSSI_INDEX + 1],
+        output_shape=(1,),
+        name="max_rssi_extract"
+    )(inputs)
+
+    rssi_branch = layers.Dense(
+        16,
+        activation="relu",
+        name="rssi_branch_dense"
+    )(max_rssi)
+
+    rssi_branch = layers.LayerNormalization(
+        name="rssi_branch_ln"
+    )(rssi_branch)
+
+    # ------------------------------------------------------------------------
+    # Soft threshold branch
+    # ------------------------------------------------------------------------
+
+    t75 = float(
+        scaled_thresholds[0]
+    )
+
+    t65 = float(
+        scaled_thresholds[1]
+    )
+
+    t55 = float(
+        scaled_thresholds[2]
+    )
+
+    threshold_features = layers.Lambda(
+        lambda t:
+        tf.concat(
+            [
+                tf.sigmoid(
+                    40.0 * (t - t75)
+                ),
+                tf.sigmoid(
+                    40.0 * (t - t65)
+                ),
+                tf.sigmoid(
+                    40.0 * (t - t55)
+                )
+            ],
+            axis=1
+        ),
+        output_shape=(3,),
+        name="soft_rssi_thresholds"
+    )(max_rssi)
+
+    # ------------------------------------------------------------------------
+    # Fusion
+    # ------------------------------------------------------------------------
+
+    combined = layers.Concatenate(
+        name="shared_feature_fusion"
+    )(
+        [
+            x,
+            rssi_branch,
+            threshold_features
+        ]
+    )
+
+    # ------------------------------------------------------------------------
+    # Personalized private head
+    # ------------------------------------------------------------------------
+
+    private = layers.Dense(
+        128,
+        activation="relu",
+        name="private_dense"
+    )(combined)
+
+    private = layers.Dropout(
+        0.04,
+        name="private_dropout"
+    )(private)
+
+    private = layers.Dense(
+        64,
+        activation="relu",
+        name="private_dense_2"
+    )(private)
+
+    outputs = layers.Dense(
+        4,
+        activation="softmax",
+        name="classifier"
+    )(private)
+
+    return Model(
+        inputs,
+        outputs,
+        name="ThresholdAwareFedPer"
+    )
+
+# ============================================================================
+# 8. Load personalized client weights
+# ============================================================================
+
+client_models = {}
+
+model_files = sorted([
+    filename
+    for filename in os.listdir(MODEL_DIR)
+    if filename.endswith(".keras")
+])
+
+if len(model_files) == 0:
+    raise FileNotFoundError(
+        f"No personalized models found in {MODEL_DIR}"
+    )
+
+print(
+    "\nLoading personalized client models..."
+)
+
+for filename in model_files:
+
+    match = re.search(
+        r"PHONEID_(\d+)",
+        filename
+    )
+
+    if match is None:
+        continue
+
+    phone_id = int(
+        match.group(1)
+    )
+
+    model_path = os.path.join(
+        MODEL_DIR,
+        filename
+    )
+
+    model = build_step16_deployment_model()
+
+    model.compile(
+        optimizer=Adam(
+            learning_rate=0.0003
+        ),
+        loss="sparse_categorical_crossentropy"
+    )
+
+    model.load_weights(
+        model_path
+    )
+
+    client_models[
+        phone_id
+    ] = model
+
+    print(
+        f"  PHONEID {phone_id}: READY"
+    )
+
+print(
+    "\nPersonalized models loaded:",
+    len(client_models)
+)
+
+# ============================================================================
+# 9. RSSI rule
+# ============================================================================
+
+def rssi_rule(
+    max_rssi
+):
+
+    if max_rssi < -75.0:
+        return 0
+
+    elif max_rssi < -65.0:
+        return 1
+
+    elif max_rssi < -55.0:
+        return 2
+
+    else:
+        return 3
+
+# ============================================================================
+# 10. Feature construction
+# ============================================================================
+
+def create_deployment_features(
+    rssi_values
+):
+    """
+    Convert a dictionary of WAP RSSI measurements into the exact
+    472-feature representation used by the trained system.
+    """
+
+    # ------------------------------------------------------------------------
+    # Create 465 WAP vector
+    # ------------------------------------------------------------------------
+
+    wap_vector = []
+
+    for feature in selected_features:
+
+        value = rssi_values.get(
+            feature,
+            -100.0
+        )
+
+        try:
+            value = float(value)
+        except:
+            value = -100.0
+
+        # UJIIndoorLoc convention:
+        # 100 means no detected signal.
+        if value == 100:
+            value = -100.0
+
+        wap_vector.append(
+            value
+        )
+
+    wap_vector = np.asarray(
+        wap_vector,
+        dtype=np.float32
+    )
+
+    # ------------------------------------------------------------------------
+    # Signal statistics
+    # ------------------------------------------------------------------------
+
+    max_rssi = float(
+        np.max(wap_vector)
+    )
+
+    mean_rssi = float(
+        np.mean(wap_vector)
+    )
+
+    median_rssi = float(
+        np.median(wap_vector)
+    )
+
+    std_rssi = float(
+        np.std(wap_vector)
+    )
+
+    detected_values = wap_vector[
+        wap_vector > -100
+    ]
+
+    detected_aps = int(
+        len(detected_values)
+    )
+
+    if detected_aps > 0:
+
+        sorted_detected = np.sort(
+            detected_values
+        )[::-1]
+
+        top3_mean = float(
+            np.mean(
+                sorted_detected[
+                    :min(3, detected_aps)
+                ]
+            )
+        )
+
+        top5_mean = float(
+            np.mean(
+                sorted_detected[
+                    :min(5, detected_aps)
+                ]
+            )
+        )
+
+    else:
+
+        top3_mean = -100.0
+        top5_mean = -100.0
+
+    engineered = {
+        "max_rssi": max_rssi,
+        "mean_rssi": mean_rssi,
+        "median_rssi": median_rssi,
+        "std_rssi": std_rssi,
+        "detected_aps": float(detected_aps),
+        "top3_mean": top3_mean,
+        "top5_mean": top5_mean
+    }
+
+    # ------------------------------------------------------------------------
+    # Combine 465 + 7 = 472
+    # ------------------------------------------------------------------------
+
+    final_vector = wap_vector.tolist()
+
+    for feature in signal_feature_names:
+
+        final_vector.append(
+            engineered[feature]
+        )
+
+    X = np.asarray(
+        final_vector,
+        dtype=np.float32
+    ).reshape(1, -1)
+
+    if X.shape[1] != 472:
+        raise ValueError(
+            f"Expected 472 features, "
+            f"created {X.shape[1]}."
+        )
+
+    return X, engineered
+
+# ============================================================================
+# 11. FINAL PREDICTION FUNCTION
+# ============================================================================
+
+def predict_final_link_quality(
+    rssi_values,
+    phone_id=None
+):
+    """
+    Final locked hybrid predictor.
+
+    Parameters
+    ----------
+    rssi_values:
+        Dictionary such as:
+        {
+            "WAP001": -55,
+            "WAP002": -64,
+            "WAP003": -100,
+            ...
+        }
+
+    phone_id:
+        Known federated PHONEID.
+        Unknown PHONEID -> RSSI-rule fallback.
+
+    Returns
+    -------
+    Dictionary with final prediction and diagnostics.
+    """
+
+    # ------------------------------------------------------------------------
+    # Build features
+    # ------------------------------------------------------------------------
+
+    X_raw, stats = create_deployment_features(
+        rssi_values
+    )
+
+    max_rssi = stats[
+        "max_rssi"
+    ]
+
+    # ------------------------------------------------------------------------
+    # Base RSSI rule
+    # ------------------------------------------------------------------------
+
+    rule_class = rssi_rule(
+        max_rssi
+    )
+
+    # ------------------------------------------------------------------------
+    # Distance to closest class boundary
+    # ------------------------------------------------------------------------
+
+    distance = float(
+        np.min(
+            np.abs(
+                THRESHOLDS
+                -
+                max_rssi
+            )
+        )
+    )
+
+    near_threshold = (
+        distance <= LOCKED_MARGIN
+    )
+
+    # ------------------------------------------------------------------------
+    # Determine model
+    # ------------------------------------------------------------------------
+
+    neural_used = False
+    neural_prediction = None
+    neural_confidence = None
+    probabilities = None
+
+    final_class = rule_class
+
+    # ------------------------------------------------------------------------
+    # Hybrid decision
+    # ------------------------------------------------------------------------
+
+    if near_threshold and phone_id in client_models:
+
+        model = client_models[
+            phone_id
+        ]
+
+        X_scaled = deployment_scaler.transform(
+            X_raw
+        )
+
+        probabilities = model.predict(
+            X_scaled,
+            verbose=0
+        )[0]
+
+        neural_prediction = int(
+            np.argmax(probabilities)
+        )
+
+        neural_confidence = float(
+            probabilities[
+                neural_prediction
+            ]
+        )
+
+        final_class = neural_prediction
+        neural_used = True
+
+        decision_reason = (
+            "Near RSSI threshold -> "
+            "personalized FedPer"
+        )
+
+        model_used = (
+            f"Personalized FedPer "
+            f"(PHONEID={phone_id})"
+        )
+
+    else:
+
+        if phone_id in client_models:
+
+            model_used = (
+                f"RSSI rule; "
+                f"PHONEID={phone_id}"
+            )
+
+        else:
+
+            model_used = (
+                "RSSI rule fallback "
+                "(unknown PHONEID)"
+            )
+
+        decision_reason = (
+            "Outside neural threshold region -> "
+            "RSSI rule"
+        )
+
+    # ------------------------------------------------------------------------
+    # Confidence
+    # ------------------------------------------------------------------------
+
+    if neural_used:
+
+        confidence = (
+            neural_confidence
+        )
+
+    else:
+
+        confidence = 1.0
+
+    # ------------------------------------------------------------------------
+    # Return result
+    # ------------------------------------------------------------------------
+
+    result = {
+
+        "predicted_class":
+            int(final_class),
+
+        "predicted_label":
+            CLASS_NAMES[int(final_class)],
+
+        "confidence":
+            float(confidence),
+
+        "confidence_percent":
+            float(confidence * 100),
+
+        "phone_id":
+            phone_id,
+
+        "model_used":
+            model_used,
+
+        "decision_reason":
+            decision_reason,
+
+        "neural_used":
+            neural_used,
+
+        "max_rssi_dbm":
+            max_rssi,
+
+        "mean_rssi_dbm":
+            stats["mean_rssi"],
+
+        "median_rssi_dbm":
+            stats["median_rssi"],
+
+        "std_rssi":
+            stats["std_rssi"],
+
+        "detected_aps":
+            stats["detected_aps"],
+
+        "top3_mean_dbm":
+            stats["top3_mean"],
+
+        "top5_mean_dbm":
+            stats["top5_mean"],
+
+        "rss_rule_class":
+            int(rule_class),
+
+        "rss_rule_label":
+            CLASS_NAMES[int(rule_class)],
+
+        "distance_to_threshold_dbm":
+            distance
+    }
+
+    if probabilities is not None:
+
+        result["neural_probabilities"] = {
+            CLASS_NAMES[i]:
+            float(probabilities[i])
+            for i in range(4)
+        }
+
+    return result
+
+# ============================================================================
+# 12. Create example input
+# ============================================================================
+
+example_input = {
+    feature: -100.0
+    for feature in selected_features
+}
+
+example_input.update({
+    "WAP001": -55.2,
+    "WAP002": -58.0,
+    "WAP005": -61.0,
+    "WAP006": -70.0,
+    "WAP007": -74.0
+})
+
+# ============================================================================
+# 13. Test the deployment predictor
+# ============================================================================
+
+example_result = predict_final_link_quality(
+    example_input,
+    phone_id=1
+)
+
+print("\n" + "=" * 80)
+print("DEPLOYMENT TEST")
+print("=" * 80)
+
+print(
+    "PHONEID             :",
+    example_result["phone_id"]
+)
+
+print(
+    "Max RSSI            :",
+    f"{example_result['max_rssi_dbm']:.2f} dBm"
+)
+
+print(
+    "Detected APs        :",
+    example_result["detected_aps"]
+)
+
+print(
+    "RSSI-rule class     :",
+    example_result["rss_rule_label"]
+)
+
+print(
+    "Distance to boundary:",
+    f"{example_result['distance_to_threshold_dbm']:.2f} dBm"
+)
+
+print(
+    "Neural model used   :",
+    example_result["neural_used"]
+)
+
+print(
+    "Model/decision      :",
+    example_result["model_used"]
+)
+
+print(
+    "Final prediction    :",
+    example_result["predicted_label"]
+)
+
+print(
+    "Confidence           :",
+    f"{example_result['confidence_percent']:.2f}%"
+)
+
+# ============================================================================
+# 14. Deployment-ready status
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 19 COMPLETED")
+print("=" * 80)
+
+print(
+    "Final predictor     : READY"
+)
+
+print(
+    "472-feature input   : VERIFIED"
+)
+
+print(
+    "Locked margin       :",
+    LOCKED_MARGIN,
+    "dBm"
+)
+
+print(
+    "Personalized clients:",
+    len(client_models)
+)
+
+print(
+    "Test data loaded    : NO"
+)
+
+print(
+    "\nUse predict_final_link_quality(...) for deployment."
+)
+
+CELL 20
+MATCHES: gradio, gr.Blocks, predict_final_link_quality, launch(
+------------------------------------------------------------------------------------------
+# ============================================================================
+# STEP 20: FINAL INTERACTIVE WEB DEMO
+# ============================================================================
+#
+# Uses the locked deployment predictor from STEP 19.
+# Does NOT load or use the test set.
+# ============================================================================
+
+import json
+import traceback
+
+print("=" * 80)
+print("STEP 20: FINAL INTERACTIVE WEB DEMO")
+print("=" * 80)
+
+# ============================================================================
+# 1. Check Gradio
+# ============================================================================
+
+try:
+    import gradio as gr
+except ImportError:
+    raise ImportError(
+        "Gradio is not installed. Run: !pip install -q gradio"
+    )
+
+print("Gradio:", gr.__version__)
+
+# ============================================================================
+# 2. Create parser for RSSI input
+# ============================================================================
+
+def parse_rssi_text(text):
+
+    """
+    Parse input such as:
+
+        WAP001=-55
+        WAP002=-63
+        WAP005=-71
+
+    or:
+
+        WAP001=-55, WAP002=-63, WAP005=-71
+    """
+
+    rssi_values = {}
+
+    if text is None:
+        text = ""
+
+    # Support both newline and comma separated input
+    normalized = (
+        text
+        .replace(",", "\n")
+        .replace(";", "\n")
+    )
+
+    for line in normalized.splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        if "=" not in line:
+            continue
+
+        key, value = line.split(
+            "=",
+            1
+        )
+
+        key = key.strip().upper()
+        value = value.strip()
+
+        # Allow accidental spaces such as "WAP001 = -55"
+        if not key.startswith("WAP"):
+            continue
+
+        try:
+            value = float(value)
+        except ValueError:
+            continue
+
+        # UJIIndoorLoc convention
+        if value == 100:
+            value = -100.0
+
+        # Keep values in sensible RSSI range
+        value = max(
+            -100.0,
+            min(0.0, value)
+        )
+
+        rssi_values[key] = value
+
+    return rssi_values
+
+
+# ============================================================================
+# 3. UI prediction function
+# ============================================================================
+
+def web_predict(
+    phone_id,
+    rssi_text
+):
+
+    try:
+
+        # ---------------------------------------------------------------
+        # PHONEID
+        # ---------------------------------------------------------------
+
+        phone_id_value = None
+
+        if phone_id is not None:
+
+            phone_id_text = str(
+                phone_id
+            ).strip()
+
+            if phone_id_text:
+
+                try:
+                    phone_id_value = int(
+                        phone_id_text
+                    )
+                except ValueError:
+
+                    return (
+                        "❌ Invalid PHONEID",
+                        "{}"
+                    )
+
+        # ---------------------------------------------------------------
+        # Parse RSSI input
+        # ---------------------------------------------------------------
+
+        rssi_values = parse_rssi_text(
+            rssi_text
+        )
+
+        if len(rssi_values) == 0:
+
+            return (
+                "❌ No valid WAP RSSI values were provided.",
+                "{}"
+            )
+
+        # ---------------------------------------------------------------
+        # Run final predictor
+        # ---------------------------------------------------------------
+
+        result = predict_final_link_quality(
+            rssi_values,
+            phone_id=phone_id_value
+        )
+
+        # ---------------------------------------------------------------
+        # Format result
+        # ---------------------------------------------------------------
+
+        label = result[
+            "predicted_label"
+        ]
+
+        confidence = result[
+            "confidence_percent"
+        ]
+
+        neural_used = result[
+            "neural_used"
+        ]
+
+        model_used = result[
+            "model_used"
+        ]
+
+        reason = result[
+            "decision_reason"
+        ]
+
+        # ---------------------------------------------------------------
+        # Human-readable result
+        # ---------------------------------------------------------------
+
+        output_text = f"""
+WIRELESS LINK QUALITY RESULT
+========================================
+
+Prediction        : {label}
+Confidence        : {confidence:.2f}%
+
+PHONEID           : {phone_id_value}
+WAPs supplied     : {len(rssi_values)}
+Detected APs      : {result['detected_aps']}
+
+Maximum RSSI      : {result['max_rssi_dbm']:.2f} dBm
+Mean RSSI         : {result['mean_rssi_dbm']:.2f} dBm
+
+RSSI-rule result  : {result['rss_rule_label']}
+Threshold distance: {result['distance_to_threshold_dbm']:.2f} dBm
+
+Neural model used : {"YES" if neural_used else "NO"}
+
+Decision          : {reason}
+
+Model             : {model_used}
+"""
+
+        # ---------------------------------------------------------------
+        # JSON details
+        # ---------------------------------------------------------------
+
+        json_result = json.dumps(
+            result,
+            indent=2
+        )
+
+        return (
+            output_text.strip(),
+            json_result
+        )
+
+    except Exception as e:
+
+        error_text = (
+            "❌ Prediction failed\n\n"
+            f"{str(e)}\n\n"
+            f"{traceback.format_exc()}"
+        )
+
+        return (
+            error_text,
+            "{}"
+        )
+
+
+# ============================================================================
+# 4. Example input
+# ============================================================================
+
+example_text = """WAP001=-55.2
+WAP002=-58
+WAP005=-61
+WAP006=-70
+WAP007=-74
+"""
+
+# ============================================================================
+# 5. Build Gradio interface
+# ============================================================================
+
+with gr.Blocks(
+    title="Federated Wireless Link Quality Predictor"
+) as demo:
+
+    gr.Markdown(
+        """
+# 📡 Federated Wireless Link Quality Predictor
+
+### Personalized Federated Deep Learning + RSSI Hybrid System
+
+Enter a PHONEID and the detected WAP RSSI values.
+
+**Supported quality classes:** Poor, Fair, Good, Excellent
+        """
+    )
+
+    with gr.Row():
+
+        phone_input = gr.Textbox(
+            label="PHONEID",
+            value="1",
+            placeholder="Example: 1"
+        )
+
+    rssi_input = gr.Textbox(
+        label="WAP RSSI Measurements",
+        value=example_text,
+        lines=12,
+        placeholder=(
+            "WAP001=-55\n"
+            "WAP002=-63\n"
+            "WAP005=-70"
+        )
+    )
+
+    predict_button = gr.Button(
+        "🔍 Predict Link Quality",
+        variant="primary"
+    )
+
+    result_output = gr.Textbox(
+        label="Prediction Result",
+        lines=18
+    )
+
+    json_output = gr.Code(
+        label="Detailed Prediction JSON",
+        language="json",
+        lines=20
+    )
+
+    predict_button.click(
+        fn=web_predict,
+        inputs=[
+            phone_input,
+            rssi_input
+        ],
+        outputs=[
+            result_output,
+            json_output
+        ]
+    )
+
+    gr.Markdown(
+        """
+### Input format
+
+Use one WAP per line:
+
+`WAP001=-55`
+
+`WAP002=-63`
+
+`WAP005=-71`
+
+Only detected WAPs need to be entered. Missing WAPs are treated as
+`-100 dBm`.
+
+For known PHONEIDs, the system can use the personalized FedPer model
+near the locked RSSI decision boundaries. Otherwise it uses the RSSI-rule
+fallback.
+        """
+    )
+
+# ============================================================================
+# 6. Launch
+# ============================================================================
+
+print("\nStarting Gradio interface...")
+
+demo.launch(
+    share=True,
+    debug=False
+)
+
+print("\n" + "=" * 80)
+print("STEP 20 COMPLETED")
+print("=" * 80)
+print("Interactive deployment UI launched.")
+
+CELL 21
+MATCHES: best_hybrid_fedper_strategy
+------------------------------------------------------------------------------------------
+# ============================================================================
+# STEP 21A: RECOVER TRAINED PROJECT FROM GOOGLE DRIVE
+# ============================================================================
+
+import os
+from pathlib import Path
+
+print("=" * 80)
+print("STEP 21A: SEARCHING FOR PREVIOUS TRAINED ARTIFACTS")
+print("=" * 80)
+
+# ============================================================================
+# 1. Check /content
+# ============================================================================
+
+print("\nChecking /content...")
+
+content_hits = []
+
+for root, dirs, files in os.walk("/content"):
+
+    # Do not recurse into Drive before mounting
+    if "/content/drive" in root:
+        continue
+
+    for filename in files:
+
+        if any(
+            key in filename.lower()
+            for key in [
+                "fedper",
+                "wireless",
+                "federated_data",
+                "hybrid",
+                "personalized"
+            ]
+        ):
+
+            content_hits.append(
+                os.path.join(root, filename)
+            )
+
+if content_hits:
+
+    for path in content_hits[:50]:
+        print("FOUND:", path)
+
+else:
+
+    print("No previous trained artifacts found in /content.")
+
+# ============================================================================
+# 2. Mount Google Drive
+# ============================================================================
+
+print("\nMounting Google Drive...")
+
+try:
+
+    from google.colab import drive
+
+    drive.mount(
+        "/content/drive"
+    )
+
+    print(
+        "Google Drive mounted successfully."
+    )
+
+except Exception as e:
+
+    print(
+        "Google Drive mount failed:"
+    )
+
+    print(e)
+
+# ============================================================================
+# 3. Search common Drive locations
+# ============================================================================
+
+SEARCH_ROOTS = [
+    "/content/drive/MyDrive"
+]
+
+TARGET_NAMES = [
+    "personalized_federated_wireless_project.zip",
+    "federated_data_3way_final.pkl",
+    "centralized_wireless_scaler.pkl",
+    "best_hybrid_fedper_strategy.pkl",
+    "FINAL_HYBRID_TEST_METRICS.pkl",
+    "FINAL_HYBRID_TEST_PREDICTIONS.csv"
+]
+
+print("\nSearching Google Drive...")
+print("-" * 60)
+
+found = []
+
+for search_root in SEARCH_ROOTS:
+
+    if not os.path.exists(search_root):
+
+        print(
+            "Search root not found:",
+            search_root
+        )
+
+        continue
+
+    for root, dirs, files in os.walk(
+        search_root
+    ):
+
+        for filename in files:
+
+            # Exact important files
+            if filename in TARGET_NAMES:
+
+                full_path = os.path.join(
+                    root,
+                    filename
+                )
+
+                found.append(
+                    full_path
+                )
+
+            # Also detect ZIPs
+            elif (
+                filename.lower().endswith(".zip")
+                and
+                (
+                    "federated" in filename.lower()
+                    or
+                    "wireless" in filename.lower()
+                    or
+                    "fedper" in filename.lower()
+                )
+            ):
+
+                full_path = os.path.join(
+                    root,
+                    filename
+                )
+
+                found.append(
+                    full_path
+                )
+
+# ============================================================================
+# 4. Display results
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("RECOVERY SEARCH RESULTS")
+print("=" * 80)
+
+if not found:
+
+    print(
+        "NO TRAINED ARTIFACTS FOUND IN GOOGLE DRIVE."
+    )
+
+    print(
+        "\nYour trained model files are therefore not currently "
+        "available in this Colab runtime or Google Drive."
+    )
+
+    print(
+        "\nDO NOT RETRAIN YET."
+    )
+
+else:
+
+    # Remove duplicates
+    found = sorted(
+        set(found)
+    )
+
+    print(
+        "Found:",
+        len(found),
+        "possible artifacts."
+    )
+
+    for path in found:
+
+        size_mb = (
+            os.path.getsize(path)
+            /
+            (1024 * 1024)
+        )
+
+        print(
+            f"\n{path}"
+        )
+
+        print(
+            f"  Size: {size_mb:.2f} MB"
+        )
+
+# ============================================================================
+# 5. Look specifically for the previous ZIP
+# ============================================================================
+
+zip_matches = [
+    p
+    for p in found
+    if p.lower().endswith(".zip")
+]
+
+print(
+    "\n" + "=" * 80
+)
+
+print(
+    "PROJECT ZIP SEARCH"
+)
+
+print(
+    "=" * 80
+)
+
+if zip_matches:
+
+    for p in zip_matches:
+
+        print(
+            "\nPROJECT ZIP FOUND:"
+        )
+
+        print(p)
+
+else:
+
+    print(
+        "Previous project ZIP was not found."
+    )
+
+# ============================================================================
+# 6. Final status
+# ============================================================================
+
+print(
+    "\n" + "=" * 80
+)
+
+print(
+    "STEP 21A COMPLETED"
+)
+
+print(
+    "=" * 80
+)
+
+CELL 23
+MATCHES: best_hybrid_fedper_strategy, threshold_aware_fedper_best
+------------------------------------------------------------------------------------------
+import os
+
+print("=" * 80)
+print("STEP 21C: VERIFYING FINAL TRAINED ARTIFACTS")
+print("=" * 80)
+
+paths_to_check = [
+    "/content/threshold_aware_fedper_best",
+    "/content/final_wireless_deployment",
+    "/content/best_hybrid_fedper_strategy.pkl",
+    "/content/FINAL_HYBRID_TEST_PREDICTIONS.csv",
+    "/content/FINAL_PROJECT_RESULTS.csv",
+    "/content/best_centralized_wireless_mlp.keras",
+    "/content/centralized_wireless_scaler.pkl",
+]
+
+for path in paths_to_check:
+    exists = os.path.exists(path)
+    print(f"{'✅' if exists else '❌'} {path}")
+
+print("\n" + "-" * 80)
+
+for folder in [
+    "/content/threshold_aware_fedper_best",
+    "/content/final_wireless_deployment"
+]:
+    if os.path.isdir(folder):
+        files = os.listdir(folder)
+        print(f"\n📁 {folder}")
+        print(f"   Files: {len(files)}")
+        for f in files[:30]:
+            full = os.path.join(folder, f)
+            if os.path.isfile(full):
+                print(f"   - {f} ({os.path.getsize(full)/1024/1024:.2f} MB)")
+            else:
+                print(f"   - {f}/")
+
+print("\n" + "=" * 80)
+print("STEP 21C COMPLETED")
+print("=" * 80)
+print("Send me this output.")
+
+CELL 24
+MATCHES: best_hybrid_fedper_strategy, threshold_aware_fedper_best
+------------------------------------------------------------------------------------------
+import os
+
+print("=" * 80)
+print("STEP 21D: INSPECTING FINAL DEPLOYMENT PACKAGE")
+print("=" * 80)
+
+deployment_root = "/content/final_wireless_deployment"
+
+def print_tree(path, prefix=""):
+    if not os.path.exists(path):
+        print(f"❌ Missing: {path}")
+        return
+
+    entries = sorted(os.listdir(path))
+
+    for i, name in enumerate(entries):
+        full_path = os.path.join(path, name)
+        last = (i == len(entries) - 1)
+        branch = "└── " if last else "├── "
+
+        if os.path.isdir(full_path):
+            print(f"{prefix}{branch}📁 {name}/")
+            new_prefix = prefix + ("    " if last else "│   ")
+            print_tree(full_path, new_prefix)
+        else:
+            size_mb = os.path.getsize(full_path) / (1024 * 1024)
+            print(f"{prefix}{branch}📄 {name} ({size_mb:.2f} MB)")
+
+print("\nDEPLOYMENT DIRECTORY:")
+print_tree(deployment_root)
+
+print("\n" + "-" * 80)
+
+# Count personalized models
+threshold_dir = "/content/threshold_aware_fedper_best"
+
+model_files = [
+    f for f in os.listdir(threshold_dir)
+    if f.endswith(".keras") and f.startswith("client_PHONEID_")
+]
+
+print(f"Threshold-aware personalized models found: {len(model_files)}")
+
+expected_phoneids = [
+    1, 3, 6, 7, 8, 10, 11, 13,
+    14, 16, 17, 18, 19, 22, 23, 24
+]
+
+found_phoneids = sorted([
+    int(f.replace("client_PHONEID_", "").replace(".keras", ""))
+    for f in model_files
+])
+
+print("Expected PHONEIDs:", expected_phoneids)
+print("Found PHONEIDs:   ", found_phoneids)
+
+if found_phoneids == expected_phoneids:
+    print("✅ All 16 personalized models are present.")
+else:
+    print("⚠️ PHONEID model mismatch.")
+
+print("\nHybrid strategy:")
+strategy_path = "/content/best_hybrid_fedper_strategy.pkl"
+
+if os.path.exists(strategy_path):
+    print("✅ best_hybrid_fedper_strategy.pkl present")
+else:
+    print("❌ Hybrid strategy missing")
+
+print("\nScaler:")
+scaler_path = "/content/centralized_wireless_scaler.pkl"
+
+if os.path.exists(scaler_path):
+    print("✅ centralized_wireless_scaler.pkl present")
+else:
+    print("❌ Scaler missing")
+
+print("\n" + "=" * 80)
+print("STEP 21D COMPLETED")
+print("=" * 80)
+
+print("\nSend me this output before we build the final ZIP.")
+
+CELL 25
+MATCHES: best_hybrid_fedper_strategy, threshold_aware_fedper_best
+------------------------------------------------------------------------------------------
+import os
+import json
+import pickle
+import glob
+
+print("=" * 80)
+print("STEP 21E: VERIFYING FINAL MODEL + PREPROCESSING CONFIGURATION")
+print("=" * 80)
+
+# ------------------------------------------------------------------
+# 1. Locate feature names
+# ------------------------------------------------------------------
+feature_candidates = [
+    "/content/feature_names.json",
+    "/content/final_wireless_deployment/feature_names.json",
+    "/content/preprocessing/feature_names.json",
+]
+
+feature_path = next((p for p in feature_candidates if os.path.exists(p)), None)
+
+print("\nFEATURE CONFIGURATION")
+print("-" * 80)
+
+if feature_path:
+    print("✅ Feature file:", feature_path)
+
+    with open(feature_path, "r") as f:
+        feature_names = json.load(f)
+
+    if isinstance(feature_names, dict):
+        # Handle formats such as {"features": [...]}
+        for key in ["features", "feature_names", "names"]:
+            if key in feature_names:
+                feature_names = feature_names[key]
+                break
+
+    print("Total features:", len(feature_names))
+
+    print("\nFirst 15 features:")
+    print(feature_names[:15])
+
+    print("\nLast 15 features:")
+    print(feature_names[-15:])
+
+    expected_engineered = [
+        "max_rssi",
+        "mean_rssi",
+        "median_rssi",
+        "std_rssi",
+        "detected_aps",
+        "top3_mean",
+        "top5_mean",
+    ]
+
+    missing_engineered = [
+        x for x in expected_engineered if x not in feature_names
+    ]
+
+    if not missing_engineered:
+        print("\n✅ All 7 engineered features are present.")
+    else:
+        print("\n⚠️ Missing engineered features:", missing_engineered)
+
+else:
+    print("❌ feature_names.json not found")
+
+
+# ------------------------------------------------------------------
+# 2. Verify scaler
+# ------------------------------------------------------------------
+print("\nSCALER")
+print("-" * 80)
+
+scaler_path = "/content/centralized_wireless_scaler.pkl"
+
+if os.path.exists(scaler_path):
+    with open(scaler_path, "rb") as f:
+        scaler = pickle.load(f)
+
+    print("✅ Scaler loaded:", scaler_path)
+    print("Scaler type:", type(scaler).__name__)
+
+    if hasattr(scaler, "n_features_in_"):
+        print("Scaler input features:", scaler.n_features_in_)
+
+    if hasattr(scaler, "feature_range"):
+        print("Scaler feature range:", scaler.feature_range)
+else:
+    print("❌ Scaler not found")
+
+
+# ------------------------------------------------------------------
+# 3. Verify hybrid strategy
+# ------------------------------------------------------------------
+print("\nHYBRID STRATEGY")
+print("-" * 80)
+
+strategy_path = "/content/best_hybrid_fedper_strategy.pkl"
+
+if os.path.exists(strategy_path):
+
+    with open(strategy_path, "rb") as f:
+        strategy = pickle.load(f)
+
+    print("✅ Strategy loaded:", strategy_path)
+    print("Object type:", type(strategy).__name__)
+
+    if isinstance(strategy, dict):
+        print("\nStrategy keys:")
+        for key in strategy.keys():
+            print(" -", key)
+
+        print("\nStrategy contents:")
+        for key, value in strategy.items():
+            if not hasattr(value, "__len__") or isinstance(value, (str, int, float, bool)):
+                print(f" {key}: {value}")
+            elif isinstance(value, (list, tuple)) and len(value) <= 20:
+                print(f" {key}: {value}")
+            else:
+                print(f" {key}: <{type(value).__name__}, length={len(value)}>")
+    else:
+        print("Strategy value:")
+        print(strategy)
+
+else:
+    print("❌ Hybrid strategy file not found")
+
+
+# ------------------------------------------------------------------
+# 4. Verify personalized models
+# ------------------------------------------------------------------
+print("\nPERSONALIZED FEDPER MODELS")
+print("-" * 80)
+
+model_dir = "/content/threshold_aware_fedper_best"
+
+model_paths = sorted(
+    glob.glob(os.path.join(model_dir, "client_PHONEID_*.keras"))
+)
+
+print("Models found:", len(model_paths))
+
+for path in model_paths:
+    size_mb = os.path.getsize(path) / (1024 * 1024)
+    print(f"✅ {os.path.basename(path)} — {size_mb:.2f} MB")
+
+
+# ------------------------------------------------------------------
+# 5. Verify one model's input/output dimensions
+# ------------------------------------------------------------------
+print("\nMODEL DIMENSIONS")
+print("-" * 80)
+
+try:
+    import tensorflow as tf
+
+    sample_model_path = model_paths[0]
+
+    print("Testing:", os.path.basename(sample_model_path))
+
+    try:
+        sample_model = tf.keras.models.load_model(
+            sample_model_path,
+            compile=False,
+            safe_mode=False
+        )
+
+        print("✅ Model loaded directly with safe_mode=False")
+        print("Input shape:", sample_model.input_shape)
+        print("Output shape:", sample_model.output_shape)
+
+    except Exception as direct_error:
+        print("⚠️ Direct model load failed:")
+        print(type(direct_error).__name__, str(direct_error)[:500])
+        print("Architecture-rebuild loading will be used in deployment.")
+
+except Exception as e:
+    print("⚠️ TensorFlow verification failed:")
+    print(type(e).__name__, str(e)[:500])
+
+
+# ------------------------------------------------------------------
+# 6. Final consistency checks
+# ------------------------------------------------------------------
+print("\nFINAL CONSISTENCY CHECKS")
+print("-" * 80)
+
+checks = []
+
+# Feature count
+if feature_path:
+    checks.append(("472 total features", len(feature_names) == 472))
+
+# Scaler
+if os.path.exists(scaler_path):
+    try:
+        checks.append(("Scaler expects 472 features", scaler.n_features_in_ == 472))
+    except Exception:
+        pass
+
+# Models
+checks.append(("16 personalized models", len(model_paths) == 16))
+
+# Strategy
+checks.append(("Hybrid strategy exists", os.path.exists(strategy_path)))
+
+for label, ok in checks:
+    print(f"{'✅' if ok else '❌'} {label}")
+
+print("\n" + "=" * 80)
+print("STEP 21E COMPLETED")
+print("=" * 80)
+print("\nSend me this output.")
+
+CELL 28
+MATCHES: best_hybrid_fedper_strategy, threshold_aware_fedper_best
+------------------------------------------------------------------------------------------
+import os
+from pathlib import Path
+
+print("=" * 90)
+print("STEP 21G: FULL PROJECT ARTIFACT INVENTORY")
+print("=" * 90)
+
+ROOT = Path("/content")
+
+# Keywords used to identify project-related files/folders
+keywords = [
+    "wireless",
+    "federated",
+    "fedper",
+    "phoneid",
+    "uji",
+    "indoor",
+    "water",  # harmless; helps detect unrelated projects so we can exclude them
+    "graph",
+    "plot",
+    "result",
+    "history",
+    "deployment",
+    "ui",
+    "app",
+    "feature",
+    "scaler",
+    "hybrid",
+    "model",
+    "prediction",
+    "readme",
+    "notebook",
+]
+
+# Important exact paths we already know
+important_paths = [
+    "/content/ujiindoorloc",
+    "/content/threshold_aware_fedper_best",
+    "/content/final_wireless_deployment",
+    "/content/best_hybrid_fedper_strategy.pkl",
+    "/content/centralized_wireless_scaler.pkl",
+    "/content/best_centralized_wireless_mlp.keras",
+    "/content/feature_names.json",
+    "/content/FINAL_HYBRID_TEST_PREDICTIONS.csv",
+    "/content/FINAL_HYBRID_TEST_METRICS.pkl",
+    "/content/FINAL_PROJECT_RESULTS.csv",
+]
+
+print("\n" + "-" * 90)
+print("KNOWN IMPORTANT PATHS")
+print("-" * 90)
+
+for p in important_paths:
+    path = Path(p)
+    if path.exists():
+        if path.is_file():
+            size = path.stat().st_size / (1024 * 1024)
+            print(f"✅ FILE   {p}   ({size:.2f} MB)")
+        else:
+            print(f"✅ DIR    {p}")
+    else:
+        print(f"❌ MISSING {p}")
+
+print("\n" + "-" * 90)
+print("SEARCHING /content FOR PROJECT FILES")
+print("-" * 90)
+
+found = []
+
+for path in ROOT.rglob("*"):
+    if not path.is_file():
+        continue
+
+    # Skip common system/cache locations
+    parts_lower = [str(x).lower() for x in path.parts]
+
+    if any(
+        x in parts_lower
+        for x in ["lost+found", ".cache", ".config", ".local", "__pycache__"]
+    ):
+        continue
+
+    name = path.name.lower()
+    full = str(path).lower()
+
+    if any(k in name or k in full for k in keywords):
+        found.append(path)
+
+# Remove duplicates
+found = sorted(set(found))
+
+for path in found:
+    try:
+        size_mb = path.stat().st_size / (1024 * 1024)
+    except:
+        size_mb = 0
+
+    print(f"{size_mb:9.2f} MB  {path}")
+
+print("\n" + "-" * 90)
+print("DATASET FILES")
+print("-" * 90)
+
+dataset_root = Path("/content/ujiindoorloc")
+
+if dataset_root.exists():
+    for path in dataset_root.rglob("*"):
+        if path.is_file():
+            size_mb = path.stat().st_size / (1024 * 1024)
+            print(f"{size_mb:9.2f} MB  {path}")
+else:
+    print("❌ /content/ujiindoorloc not found")
+
+print("\n" + "-" * 90)
+print("IMAGE / GRAPH FILES")
+print("-" * 90)
+
+image_extensions = {
+    ".png", ".jpg", ".jpeg", ".svg", ".pdf"
+}
+
+images = []
+
+for path in ROOT.rglob("*"):
+    if path.is_file() and path.suffix.lower() in image_extensions:
+        # Ignore obvious unrelated Colab/system files
+        lower = str(path).lower()
+        if any(x in lower for x in [
+            "/.cache/",
+            "/.config/",
+            "/usr/",
+            "/opt/",
+            "/lib/",
+        ]):
+            continue
+        images.append(path)
+
+for path in sorted(images):
+    size_mb = path.stat().st_size / (1024 * 1024)
+    print(f"{size_mb:9.2f} MB  {path}")
+
+print("\n" + "-" * 90)
+print("PYTHON / UI / NOTEBOOK FILES")
+print("-" * 90)
+
+code_extensions = {
+    ".py", ".ipynb", ".html", ".css", ".js", ".json", ".txt", ".md"
+}
+
+code_files = []
+
+for path in ROOT.rglob("*"):
+    if not path.is_file():
+        continue
+
+    if path.suffix.lower() not in code_extensions:
+        continue
+
+    lower = str(path).lower()
+
+    if any(x in lower for x in [
+        "/.cache/",
+        "/.config/",
+        "/usr/",
+        "/opt/",
+        "/lib/",
+        "/site-packages/",
+        "/dist-packages/",
+    ]):
+        continue
+
+    # Don't list giant unrelated files
+    try:
+        size_mb = path.stat().st_size / (1024 * 1024)
+    except:
+        continue
+
+    if size_mb <= 20:
+        code_files.append(path)
+
+for path in sorted(code_files):
+    size_mb = path.stat().st_size / (1024 * 1024)
+    print(f"{size_mb:9.2f} MB  {path}")
+
+print("\n" + "=" * 90)
+print("STEP 21G COMPLETED")
+print("=" * 90)
+
+print("\nDo NOT create the ZIP yet.")
+print("Send me this complete output.")
+
+CELL 29
+MATCHES: gradio, gr.Blocks, gr.Interface, predict_final_link_quality, best_hybrid_fedper_strategy, threshold_aware_fedper_best, launch(
+------------------------------------------------------------------------------------------
+import os
+import json
+from pathlib import Path
+
+print("=" * 90)
+print("STEP 21H: LOCATING EXISTING UI + DEPLOYMENT CODE")
+print("=" * 90)
+
+search_roots = [
+    Path("/content"),
+    Path("/content/drive/MyDrive/Colab Notebooks")
+]
+
+keywords = [
+    "gradio",
+    "gr.Interface",
+    "gr.Blocks",
+    "predict_final_link_quality",
+    "threshold_aware_fedper_best",
+    "best_hybrid_fedper_strategy",
+    "PHONEID",
+    "link quality",
+    "launch("
+]
+
+found_matches = []
+
+for root in search_roots:
+    if not root.exists():
+        continue
+
+    for path in root.rglob("*"):
+
+        if not path.is_file():
+            continue
+
+        # Skip huge/non-source files
+        if path.stat().st_size > 20 * 1024 * 1024:
+            continue
+
+        if path.suffix.lower() not in {
+            ".py", ".ipynb", ".txt", ".md", ".html", ".js"
+        }:
+            continue
+
+        # Skip cache/system directories
+        p = str(path).lower()
+
+        if any(x in p for x in [
+            "/.cache/",
+            "/.config/",
+            "/__pycache__/",
+            "/site-packages/",
+            "/dist-packages/"
+        ]):
+            continue
+
+        try:
+            text = path.read_text(
+                encoding="utf-8",
+                errors="ignore"
+            )
+        except Exception:
+            continue
+
+        matches = []
+
+        for keyword in keywords:
+            if keyword.lower() in text.lower():
+                matches.append(keyword)
+
+        if matches:
+            found_matches.append((path, matches))
+
+print("\nFILES CONTAINING UI/DEPLOYMENT REFERENCES")
+print("-" * 90)
+
+if found_matches:
+    for path, matches in sorted(found_matches):
+        print(f"\n📄 {path}")
+        print("   Matches:", ", ".join(matches))
+else:
+    print("❌ No UI/deployment source references found.")
+
+# ------------------------------------------------------------------
+# Inspect final deployment folder recursively
+# ------------------------------------------------------------------
+print("\n" + "-" * 90)
+print("FINAL DEPLOYMENT DIRECTORY CONTENTS")
+print("-" * 90)
+
+deployment = Path("/content/final_wireless_deployment")
+
+if deployment.exists():
+
+    for path in sorted(deployment.rglob("*")):
+
+        relative = path.relative_to(deployment)
+
+        if path.is_file():
+            size_mb = path.stat().st_size / (1024 * 1024)
+            print(f"📄 {relative} ({size_mb:.3f} MB)")
+        else:
+            print(f"📁 {relative}/")
+
+else:
+    print("❌ /content/final_wireless_deployment not found")
+
+# ------------------------------------------------------------------
+# Search for Python files specifically in /content
+# ------------------------------------------------------------------
+print("\n" + "-" * 90)
+print("PYTHON FILES IN /content")
+print("-" * 90)
+
+py_files = []
+
+for path in Path("/content").rglob("*.py"):
+
+    p = str(path).lower()
+
+    if any(x in p for x in [
+        "/site-packages/",
+        "/dist-packages/",
+        "/usr/",
+        "/opt/",
+        "/.cache/",
+        "/__pycache__/"
+    ]):
+        continue
+
+    py_files.append(path)
+
+for path in sorted(py_files):
+    size_kb = path.stat().st_size / 1024
+    print(f"{size_kb:8.1f} KB  {path}")
+
+if not py_files:
+    print("No standalone Python files found.")
+
+print("\n" + "=" * 90)
+print("STEP 21H COMPLETED")
+print("=" * 90)
+print("\nSend me this output.")
+

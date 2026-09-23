@@ -1,0 +1,31 @@
+PERSONALIZED FEDERATED WIRELESS LINK QUALITY SYSTEM
+======================================================
+
+1. Install dependencies:
+
+   pip install -r requirements.txt
+
+2. Start the application:
+
+   python app.py
+
+3. Open the Gradio URL shown in the terminal.
+
+The application accepts:
+- PHONEID
+- WAP RSSI measurements
+
+The predictor uses:
+- 472-feature preprocessing
+- Personalized FedPer models
+- Locked margin-hybrid strategy
+- 0.25 dBm hybrid margin
+
+The application does NOT retrain the models.
+
+IMPORTANT:
+The model files must remain in:
+models/threshold_aware_fedper/
+
+The preprocessing files must remain in:
+preprocessing/

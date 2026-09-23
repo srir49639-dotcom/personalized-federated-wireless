@@ -1,0 +1,10 @@
+Metric,Value
+Centralized Test Accuracy,93.13%
+FedAvg Test Accuracy,82.89%
+Personalized FedPer Test Accuracy,89.06%
+FedPer Improvement over FedAvg,6.17 percentage points
+Centralized-FedPer Gap,4.07 percentage points
+FedPer Balanced Accuracy,89.37%
+FedPer Weighted F1,89.02%
+FedPer Mean Client Test Accuracy,87.41%
+Best FedPer Validation Round,32
